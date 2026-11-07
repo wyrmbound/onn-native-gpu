@@ -1,0 +1,3 @@
+[submodule "onnshell"]
+	path = onnshell
+	url = https://github.com/wyrmbound/onnshell

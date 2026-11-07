@@ -1,0 +1,23 @@
+From: onn field port (Walmart onn 4K Pro Gen 2, Mali-G310v2 MC1, kbase r44p1 CSF UK 1.20)
+Subject: [PATCH csf-v10 007] egl/surfaceless: fall back to the no-DRM probe for zink too
+
+With MESA_LOADER_DRIVER_OVERRIDE=zink and no usable DRM render node (the 
+box's DRM node is the display controller), surfaceless only tried the sw 
+probe when ForceSoftware was set, so zink was never selected. Take the no-DRM 
+path when Zink is requested as well.
+
+diff --git a/src/egl/drivers/dri2/platform_surfaceless.c b/src/egl/drivers/dri2/platform_surfaceless.c
+index 8fbb9a60ed4..c90fc059822 100644
+--- a/src/egl/drivers/dri2/platform_surfaceless.c
++++ b/src/egl/drivers/dri2/platform_surfaceless.c
+@@ -389,8 +389,8 @@ dri2_initialize_surfaceless(_EGLDisplay *disp)
+     */
+    driver_loaded = surfaceless_probe_device(disp, disp->Options.ForceSoftware,
+                                             disp->Options.Zink);
+-   if (!driver_loaded && disp->Options.ForceSoftware) {
+-      _eglLog(_EGL_DEBUG, "Falling back to surfaceless swrast without DRM.");
++   if (!driver_loaded && (disp->Options.ForceSoftware || disp->Options.Zink)) {
++      _eglLog(_EGL_DEBUG, "Falling back to surfaceless swrast/zink without DRM.");
+       driver_loaded = surfaceless_probe_device_sw(disp);
+    }
+ 

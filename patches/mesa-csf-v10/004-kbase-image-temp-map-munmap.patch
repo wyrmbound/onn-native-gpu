@@ -1,0 +1,25 @@
+From: onn field port (Walmart onn 4K Pro Gen 2, Mali-G310v2 MC1, kbase r44p1 CSF UK 1.20)
+Subject: [PATCH csf-v10 004] panvk: unmap temporary image CPU maps through pan_kmod_bo_munmap
+
+On kbase SAME_VA, pan_kmod_bo_mmap returns the BO's permanent mapping; a raw 
+os_munmap() tears down the GPU region (free-on-close). pan_kmod_bo_munmap is 
+a no-op on kbase and a real munmap on DRM. Same bug class as upstream 
+csf-v11/038.
+
+diff --git a/src/panfrost/vulkan/panvk_image.c b/src/panfrost/vulkan/panvk_image.c
+index aeecd4ae2a8..3bb874dbb8d 100644
+--- a/src/panfrost/vulkan/panvk_image.c
++++ b/src/panfrost/vulkan/panvk_image.c
+@@ -734,7 +734,11 @@ panvk_image_plane_bind_mem(struct panvk_device *dev,
+                                  crc_size, PAN_KMOD_BO_SYNC_CPU_CACHE_FLUSH);
+ 
+       if (temporary_map) {
+-         int ret = os_munmap(cpu_map, pan_kmod_bo_size(mem->bo));
++         /* kbase SAME_VA: pan_kmod_bo_mmap returned the BO's permanent cached
++          * mapping, not a fresh one, so a raw os_munmap() would tear down the
++          * GPU region (free-on-close). Route through pan_kmod_bo_munmap: a
++          * no-op on kbase, a real munmap() on DRM backends. */
++         int ret = pan_kmod_bo_munmap(mem->bo, cpu_map, pan_kmod_bo_size(mem->bo));
+          assert(!ret);
+       }
+    }

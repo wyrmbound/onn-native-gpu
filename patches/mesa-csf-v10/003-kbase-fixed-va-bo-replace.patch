@@ -1,0 +1,117 @@
+From: onn field port (Walmart onn 4K Pro Gen 2, Mali-G310v2 MC1, kbase r44p1 CSF UK 1.20)
+Subject: [PATCH csf-v10 003] pan/kmod: place a BO at an explicit GPU VA on kbase via BASE_MEM_FIXED
+
+kbase cannot remap a BO and its mmap() rejects MAP_FIXED, so vm_bind at a 
+caller-chosen VA used to fail. Free the kernel-placed region and re-allocate 
+it with MEM_ALLOC_EX + BASE_MEM_FIXED at the requested VA (CSF UK >= 1.9).
+
+diff --git a/src/panfrost/lib/kmod/kbase_kmod.c b/src/panfrost/lib/kmod/kbase_kmod.c
+index 780a52d2f19..ec9fa129f7f 100644
+--- a/src/panfrost/lib/kmod/kbase_kmod.c
++++ b/src/panfrost/lib/kmod/kbase_kmod.c
+@@ -1930,6 +1930,81 @@ kbase_kmod_vm_destroy(struct pan_kmod_vm *vm)
+    pan_kmod_dev_free(vm->dev, kbase_vm);
+ }
+ 
++#ifndef BASE_MEM_FIXED
++#define BASE_MEM_FIXED ((uint64_t)1 << 8)
++#endif
++
++/* kbase cannot remap a BO and its mmap() rejects MAP_FIXED, so a BO that needs
++ * a specific (e.g. 32-bit) GPU VA must be (re)allocated with BASE_MEM_FIXED in
++ * the FIXED_VA zone (MEM_ALLOC_EX.fixed_address). Free the kernel-placed region
++ * and re-allocate at the requested VA. Returns true on success. */
++static bool
++kbase_bo_replace_at_va(struct pan_kmod_dev *dev, struct kbase_kmod_bo *kbase_bo,
++                       uint64_t va)
++{
++   struct kbase_kmod_dev *kbase_dev =
++      container_of(dev, struct kbase_kmod_dev, base);
++   const uint64_t page_size = 4096;
++   uint64_t size = pan_kmod_bo_size(&kbase_bo->base);
++   uint64_t va_pages = size / page_size;
++
++   /* fixed_address needs MEM_ALLOC_EX (CSF UK >= 1.9). */
++   if (!kbase_dev->is_csf ||
++       !pan_kmod_driver_version_at_least(&dev->driver, 1, 9))
++      return false;
++
++   /* Tear down the kernel-placed region. */
++   if (kbase_bo->same_va) {
++      if (kbase_bo->cpu_ptr && kbase_bo->owns_cpu_mapping)
++         munmap(kbase_bo->cpu_ptr, size);
++   } else {
++      if (kbase_bo->gpu_mapping)
++         munmap(kbase_bo->gpu_mapping, size);
++      struct kbase_ioctl_mem_free fr = { .gpu_addr = kbase_bo->gpu_va };
++      ioctl(dev->fd, KBASE_IOCTL_MEM_FREE, &fr);
++   }
++   kbase_bo->cpu_ptr = NULL;
++   kbase_bo->gpu_mapping = NULL;
++
++   uint64_t alloc_flags = to_kbase_mem_flags(kbase_bo->base.flags);
++   alloc_flags &= ~(uint64_t)BASE_MEM_SAME_VA;
++   alloc_flags |= BASE_MEM_FIXED;
++
++   union kbase_ioctl_mem_alloc_ex req = {
++      .in = { .va_pages = va_pages, .commit_pages = va_pages,
++              .flags = alloc_flags, .fixed_address = va },
++   };
++   if (ioctl(dev->fd, KBASE_IOCTL_MEM_ALLOC_EX, &req)) {
++      mesa_loge("kbase: fixed-VA MEM_ALLOC_EX at 0x%" PRIx64 " failed: %s",
++                va, strerror(errno));
++      return false;
++   }
++   if (req.out.gpu_va != va) {
++      mesa_loge("kbase: fixed-VA alloc returned 0x%" PRIx64 " not 0x%" PRIx64,
++                (uint64_t)req.out.gpu_va, va);
++      struct kbase_ioctl_mem_free fr = { .gpu_addr = req.out.gpu_va };
++      ioctl(dev->fd, KBASE_IOCTL_MEM_FREE, &fr);
++      return false;
++   }
++
++   /* CPU mapping (GPU VA doubles as the mmap offset for zone regions). */
++   void *p = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, dev->fd, va);
++   if (p == MAP_FAILED) {
++      mesa_loge("kbase: CPU map of fixed-VA BO 0x%" PRIx64 " failed: %s", va,
++                strerror(errno));
++      struct kbase_ioctl_mem_free fr = { .gpu_addr = va };
++      ioctl(dev->fd, KBASE_IOCTL_MEM_FREE, &fr);
++      return false;
++   }
++
++   kbase_bo->cpu_ptr = p;
++   kbase_bo->gpu_mapping = p;
++   kbase_bo->gpu_va = va;
++   kbase_bo->same_va = false;
++   kbase_bo->owns_cpu_mapping = true;
++   return true;
++}
++
+ static int
+ kbase_kmod_vm_bind(struct pan_kmod_vm *vm, enum pan_kmod_vm_op_mode mode,
+                    struct pan_kmod_vm_op *ops, uint32_t op_count)
+@@ -1951,13 +2026,16 @@ kbase_kmod_vm_bind(struct pan_kmod_vm *vm, enum pan_kmod_vm_op_mode mode,
+             /* kbase assigned the VA at alloc time; report it back. */
+             op->va.start = va;
+          } else if (op->va.start != va) {
+-            /* Mapping at a caller-chosen address is impossible in kbase
+-             * (no vm_bind equivalent).  Fail loudly rather than letting
+-             * the caller use a VA the GPU doesn't know about. */
+-            mesa_loge("kbase: cannot map BO at explicit VA 0x%" PRIx64
+-                      " (kbase-assigned VA is 0x%" PRIx64 ")",
+-                      op->va.start, va);
+-            return -1;
++            /* kbase can't remap a BO, but BASE_MEM_FIXED can place a fresh
++             * region at a chosen GPU VA. Re-place priv BOs that need a
++             * specific (32-bit) GPU VA at the requested address. */
++            if (op->map.bo_offset != 0 ||
++                !kbase_bo_replace_at_va(vm->dev, kbase_bo, op->va.start)) {
++               mesa_loge("kbase: cannot map BO at explicit VA 0x%" PRIx64
++                         " (kbase-assigned VA is 0x%" PRIx64 ")",
++                         op->va.start, va);
++               return -1;
++            }
+          }
+       } else if (op->type == PAN_KMOD_VM_OP_TYPE_UNMAP) {
+          /* Unmap happens automatically when the BO is freed. */

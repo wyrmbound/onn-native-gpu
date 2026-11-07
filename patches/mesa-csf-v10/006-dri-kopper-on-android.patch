@@ -1,0 +1,20 @@
+From: onn field port (Walmart onn 4K Pro Gen 2, Mali-G310v2 MC1, kbase r44p1 CSF UK 1.20)
+Subject: [PATCH csf-v10 006] dri: build real kopper.c for zink on Android
+
+meson linked kopper_stubs.c on Android, so zink had no screen init path. We 
+use EGL surfaceless + our own dma-buf present, so build kopper.c whenever 
+zink is enabled.
+
+diff --git a/src/gallium/frontends/dri/meson.build b/src/gallium/frontends/dri/meson.build
+index 56611820149..687dc13e308 100644
+--- a/src/gallium/frontends/dri/meson.build
++++ b/src/gallium/frontends/dri/meson.build
+@@ -37,7 +37,7 @@ if with_dri2
+ endif
+ 
+ libdri_c_args = []
+-if with_gallium_zink and not with_platform_android
++if with_gallium_zink  # onn: was `and not with_platform_android`; we use surfaceless + our own dma-buf present, so build real kopper.c for zink even on android
+   if with_glvnd
+     libdri_c_args += '-DKOPPER_LIB_NAMES="libEGL_@0@ and libGLX_@0@"'.format(glvnd_vendor_name)
+   else

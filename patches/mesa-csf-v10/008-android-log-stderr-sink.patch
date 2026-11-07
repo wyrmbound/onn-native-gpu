@@ -1,0 +1,19 @@
+From: onn field port (Walmart onn 4K Pro Gen 2, Mali-G310v2 MC1, kbase r44p1 CSF UK 1.20)
+Subject: [PATCH csf-v10 008] util/log: also log to stderr on Android
+
+Processes run through the bundled linker64 have no working liblog sink, so 
+every mesa_loge was lost. Add the FILE (stderr) logger next to the Android 
+one.
+
+diff --git a/src/util/log.c b/src/util/log.c
+index b594a8f8c30..6459705f107 100644
+--- a/src/util/log.c
++++ b/src/util/log.c
+@@ -120,6 +120,7 @@ mesa_log_init_once(void)
+       /* pick the default loggers */
+ #if DETECT_OS_ANDROID
+       mesa_log_control |= MESA_LOG_CONTROL_ANDROID;
++      mesa_log_control |= MESA_LOG_CONTROL_FILE; /* onn: GSI liblog sink is dead; also emit to stderr */
+ #else
+       mesa_log_control |= MESA_LOG_CONTROL_FILE;
+ #endif

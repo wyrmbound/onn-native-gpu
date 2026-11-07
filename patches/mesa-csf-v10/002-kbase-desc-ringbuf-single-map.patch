@@ -1,0 +1,82 @@
+From: onn field port (Walmart onn 4K Pro Gen 2, Mali-G310v2 MC1, kbase r44p1 CSF UK 1.20)
+Subject: [PATCH csf-v10 002] panvk/csf: single-map the render desc ring on kbase (no MEM_ALIAS)
+
+kbase on Amlogic S905X5M refuses MEM_ALIAS (ENOMEM), so the 2x wraparound 
+mirror cannot be built. Over-allocate the ring 4x and place it at a 
+size*2-aligned offset inside one mapping; the spill area past the ring 
+absorbs straddling chunks. Also drop the alias teardown.
+
+diff --git a/src/panfrost/vulkan/csf/panvk_vX_gpu_queue.c b/src/panfrost/vulkan/csf/panvk_vX_gpu_queue.c
+index 71d01d901db..19845889fcc 100644
+--- a/src/panfrost/vulkan/csf/panvk_vX_gpu_queue.c
++++ b/src/panfrost/vulkan/csf/panvk_vX_gpu_queue.c
+@@ -1136,9 +1136,8 @@ finish_render_desc_ringbuf(struct panvk_gpu_queue *queue)
+    if (gpu_queue_uses_kbase(dev)) {
+       /* The BO's own mapping goes away with the BO; only the alias region
+        * (not created in tracing mode) needs explicit teardown. */
+-      if (ringbuf->addr.dev && !tracing_enabled)
+-         kbase_kmod_alias_destroy(dev->kmod.dev, ringbuf->addr.dev,
+-                                  ringbuf->size, 2);
++      /* kbase: single-mapped (no MEM_ALIAS mirror); the BO's own mapping
++       * goes away with the BO, nothing to tear down. */
+    } else
+ #endif
+    if (ringbuf->addr.dev) {
+@@ -1190,8 +1189,17 @@ init_render_desc_ringbuf(struct panvk_gpu_queue *queue)
+       ringbuf->size = RENDER_DESC_RINGBUF_SIZE;
+    }
+ 
++   uint64_t bo_size = ringbuf->size;
++#ifdef HAVE_PAN_KMOD_KBASE
++   /* kbase can't 2x-mirror (MEM_ALIAS ENOMEMs) or pick a size*2-aligned VA
++    * (AUTO_VA gives only page alignment), so over-allocate (ring + spill +
++    * alignment slack) and place the ring at a size*2-aligned offset inside the
++    * single mapping. */
++   if (gpu_queue_uses_kbase(dev))
++      bo_size = ringbuf->size * 4;
++#endif
+    ringbuf->bo =
+-      pan_kmod_bo_alloc(dev->kmod.dev, dev->kmod.vm, ringbuf->size, flags);
++      pan_kmod_bo_alloc(dev->kmod.dev, dev->kmod.vm, bo_size, flags);
+    if (!ringbuf->bo)
+       return panvk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY,
+                           "Failed to create a descriptor ring buffer context");
+@@ -1212,7 +1220,7 @@ init_render_desc_ringbuf(struct panvk_gpu_queue *queue)
+          .type = PAN_KMOD_VM_OP_TYPE_MAP,
+          .va = {
+             .start = PAN_KMOD_VM_MAP_AUTO_VA,
+-            .size = ringbuf->size,
++            .size = bo_size,
+          },
+          .map = {
+             .bo = ringbuf->bo,
+@@ -1225,19 +1233,16 @@ init_render_desc_ringbuf(struct panvk_gpu_queue *queue)
+          return panvk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY,
+                              "Failed to GPU map ringbuf BO");
+ 
+-      if (tracing_enabled) {
+-         /* No wraparound mirror needed (and no guard page support). */
+-         ringbuf->addr.dev = map_op.va.start;
+-      } else {
+-         /* Mapping one BO twice back-to-back at a chosen address is not
+-          * possible on kbase; use a MEM_ALIAS region instead.  The helper
+-          * guarantees the mapping never crosses a 4G boundary, so the
+-          * wraparound can be encoded with 32-bit operations. */
+-         ringbuf->addr.dev = kbase_kmod_alias_create(
+-            dev->kmod.dev, map_op.va.start, ringbuf->size, 2);
+-         if (!ringbuf->addr.dev)
+-            return panvk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY,
+-                                "Failed to GPU map ringbuf BO (alias)");
++      /* kbase: place the ring at a size*2-aligned offset inside the over-
++       * allocated mapping. The emitter's 32-bit wrap math needs a size*2-aligned
++       * base; the spill area past the ring absorbs straddling chunks (the writer
++       * subtracts size on wrap), so no MEM_ALIAS mirror is needed. */
++      {
++         uint64_t base = map_op.va.start;
++         uint64_t aligned = ALIGN_POT(base, (uint64_t)ringbuf->size * 2);
++         ringbuf->addr.dev = aligned;
++         if (ringbuf->addr.host)
++            ringbuf->addr.host = (char *)ringbuf->addr.host + (aligned - base);
+       }
+       goto ringbuf_mapped;
+    }
