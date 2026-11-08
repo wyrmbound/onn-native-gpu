@@ -173,3 +173,23 @@ Box at the end (11:14): max_freq 852000000 (read back; the cap does not survive 
 `hidden_api_policy` deleted (null), no game running, default driver and `games/run_apk.sh` untouched
 (md5 75de243e6a0f74a19d0ed0b5b3c6ca6b). Writes made during the series: devfreq max_freq, `hidden_api_policy`, and
 the owner-approved `adb reboot`.
+
+## Pattern vs traffic (Gaslighter, 2026-11-08)
+
+Brief: the brief (private). Tool: `pb/memtest` (binary sha256 a8da1ffa, source `tools/memtest.c`), run through `pb/kald` (a renamed linker64) so OnnShell's GameSession ignores it. Panel on, 4K output, default driver 0ac69e67, each run launched at uptime >= 300 s. On-box heartbeat every 5 s (uptime, memtest pid, game pid, MemAvailable), soc_thermal every 30 s. Harness: a shell loop. Mario runs were unattended (title/demo loop).
+
+| Run | Args | Outcome | MB/s seen | MemAvailable at launch | soc_thermal | Last heartbeat | File |
+|---|---|---|---|---|---|---|---|
+| A1 | memtest slow 1024 1000 | **survived 900 s** | 60-67 | 1,793,740 kB | 52.7 C | 12:02:21 (alive) | pat-A1.txt |
+| A2 | memtest slow 1024 100 | **survived 900 s** | 590-597 | 1,935,340 kB | 52.7 C | 12:18:28 (alive) | pat-A2.txt |
+| A3 | memtest slow 128 100 | not run (only if A2 dies) | | | | | |
+| B0 | Mario, no shield | **survived 900 s**, 27,120 frames at a steady 30 fps | n/a | 2,025,668 kB | 52.7 C | 12:34:18 (alive) | pat-B0.txt |
+| B1 | memtest shield 512, then Mario | **watchdog at ~6:41-6:57** | n/a | 1,894,424 kB (1.26 GB after shield) | 52.7 C | 12:41:40 | pat-B1.txt |
+| B2 | memtest shield 1024, then Mario | **watchdog at ~13:39-14:02** (launched at uptime 303 s) | n/a | 1,647,252 kB (~0.78 GB after shield) | 51.5 C | 13:01:24 | pat-B2.txt |
+| idle | after B2: box up from 13:02:34, our processes killed, HOME | **idle watchdog reboot about 1 min after boot** (SYSTEM_BOOT 13:04:29 "watchdog_reboot"); no memtest or game running | | | | | |
+
+Reading:
+- Part A: a 1 GB footprint walked at 65 MB/s and at ~600 MB/s survived 15 min each. A wide footprint at moderate rate is harmless. That leaves rate (memhog runs at 8.7 GB/s, about 15x A2), memhog's pattern (two 64 MB buffers copied back and forth), or simple chance.
+- Part B: B0 (no shield) survived 15 min, while B1 and B2 died at 6.8 and 13.8 min. One sample each; B0's survival sits outside today's 6-7.6 min Mario band, so variance alone could explain it. No clear location effect: lifetimes did not swing with shield size in a consistent direction.
+- The idle reboot about a minute after a fresh boot, with nothing of ours running, matches the brief's stop rule and ended the series. It is the first idle death recorded. Boot itself is a heavy DDR period (dex2oat, package scans, Play services), which fits "odds rise with load" as much as anything here.
+- memtest was left running nowhere: the last two runs ended in reboots, and the idle check showed no memtest or kald process.

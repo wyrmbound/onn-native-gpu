@@ -28,6 +28,8 @@ first failure with its exact output.
 
 ## Stages
 Copy `scripts/kit.env.example` to `scripts/kit.env`, fill it in with the user, then:
+(Shortcut: the GitHub release "prebuilt" holds our arm64 builds of stages 3 and 4 plus apkrun, vkshim, tests and
+tools. Unpack it into `$WORK/pb`, verify `SHA256SUMS`, and skip 30 and 40. Stages 1, 2, 5, 6 and 7 are unchanged.)
 
 1. **Toolchain** `scripts/10-toolchain.sh`: NDK sysroot plus the clang shim.
 2. **Runtime bundle** `scripts/20-bionic-bundle.sh`: arm64 linker, libc and the graphics HAL closure from the GSI.
@@ -59,7 +61,9 @@ always goes to the Android home and ends the session.
   a CPU-only memcpy loop at ~8.7 GB/s reboots this box the same way, with an empty last_kmsg. Nothing in Mesa fixes
   it; see Finding 6 in `docs/UPSTREAM_REPORT.md` before spending any time on it. 2D titles are unaffected. A 65 W supply
   in place of the stock 10 W one does not help. Capping the GPU clock (devfreq max_freq, reachable through the vendor SystemControl HIDL
-  service) does not help either, and DDR frequency is fixed at 1584 MHz; the deaths are not thermal (<= 52 C).
+  service) does not help either, and DDR frequency is fixed at 1584 MHz; the deaths are not thermal (<= 52 C). Slow
+  wide memory walks and holding memory under the game changed nothing, and our unit also rebooted twice while idle;
+  it was returned as probably defective. If a user's box does this, suggest testing a second unit before any debugging.
 - **A Vulkan-native APK title fails at window or surface creation**: it needs `SDL_VULKAN_LIBRARY` pointing at
   `vkshim/libvulkan.so` (`apkrun/run_apk.sh` sets it), and adb launches of the display activity must pass
   `--ez launch false --ez fresh true` like the home tile, or the old session takes the buffer offer.

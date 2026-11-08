@@ -37,6 +37,15 @@ Then ask: *"Set up native games on my onn 4K Pro with this kit. Walk me through 
 anything on the box."* Claude Code reads `CLAUDE.md`, which has the stages, the rules and every trap we hit. You bring
 the box, a Linux or WSL build host, an Android 14 arm64 GSI, Shizuku, a gamepad and your own game ROM.
 
+## Skip the long builds: prebuilt binaries
+
+The [prebuilt release](../../releases) has every arm64 binary we built ourselves (PanVK ICD with patches 001-013,
+Mesa EGL/GLESv2/zink, patched SDL2 and SDL3, `vkshim/libvulkan.so`, `apkrun`, the m1-m8 tests, the diagnosis tools
+and the launch scripts), with SHA256 sums. Unpack it into `$WORK/pb` and skip stages 3 and 4 (`30-mesa.sh`,
+`40-sdl.sh`). You still run 1 and 2 (the toolchain is needed for the NEEDED check, and the 64-bit runtime comes from
+your own GSI, which we do not redistribute), 5 for your own Mario build, and 6 and 7 as usual. The release holds no
+game, ROM, game assets or Google system files.
+
 `onnshell/` is [OnnShell](https://github.com/wyrmbound/onnshell), the launcher app whose zero-copy display shows the
 game.
 
@@ -51,7 +60,7 @@ game.
 | `app/FrameReceiverView.java` | The early (copying) receiver; the zero-copy app side lives in the launcher app. |
 | `vkshim/` | The Vulkan loader shim and ONNM4 WSI (`build.sh` regenerates the dispatch from Mesa's `vk.xml`), plus `wsitest`/`vktest`. |
 | `apkrun/` | Runner for 64-bit Android game APKs: loads `libmain.so` with a JNI shim, `run_apk.sh` launch script, `apkinstall.sh`. SDL3 shims for titles that ask for haptic/sensor or the Android window pointer. |
-| `tools/` | Diagnosis tools from the freeze hunt: `gpubench` (timed GPU clear loop), `csgprobe` (reads kbase CSG slot counts), `keepalive` (steady GPU submits), `memhog` (CPU memcpy DDR load). |
+| `tools/` | Diagnosis tools from the freeze hunt: `gpubench` (timed GPU clear loop), `csgprobe` (reads kbase CSG slot counts), `keepalive` (steady GPU submits), `memhog` (CPU memcpy DDR load), `memtest` (slow wide memory walk and a memory shield, for the pattern-vs-traffic runs). |
 | `tests/` | The milestone harnesses: m1 clear, m2 triangle, m3 streamed frames, m4 zero-copy, m5 EGL/GLES on zink, m6 SDL GLES, m7 SDL audio, m8 SDL gamepad. |
 | `docs/` | Design notes, port status, the upstream report with root causes, the bootloader check, and `NFS_RUNS.md` (every freeze A/B run). |
 
@@ -73,8 +82,10 @@ See `docs/UPSTREAM_REPORT.md` for evidence. In short:
 7. **Sustained 3D titles still watchdog-reboot this box after 1 to 7 minutes, and it is not the driver.** A CPU-only
    memcpy loop at about 8.7 GB/s, with no GPU work at all, reboots it the same way with an empty last_kmsg, panel on
    or off, on the stock 10 W supply or a 65 W one. It is a random SoC lockup whose odds rise with DDR traffic.
-   1080p output stretched one game to 7.5 minutes; nothing in userspace prevents it. See Finding 6 and
-   `docs/NFS_RUNS.md`.
+   1080p output stretched one game to 7.5 minutes; nothing in userspace prevents it. Capping the GPU clock, a 65 W
+   supply, a slow 1 GB memory walk and holding memory under the game changed nothing, and the unit also rebooted
+   twice while idle with nothing of ours running, so our one unit is probably marginal hardware; it went back under
+   warranty on 2026-11-08. See Finding 6 and `docs/NFS_RUNS.md`.
 
 ## Status
 
