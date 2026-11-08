@@ -26,7 +26,7 @@ grep -q -- '-Dplatforms=android ' "$PANVK/scripts/build-android.sh" || die "buil
 rm -rf "$PANVK/patches/csf-v10"
 cp -r "$KIT/patches/mesa-csf-v10" "$PANVK/patches/csf-v10"
 echo "kit series: $(ls "$PANVK/patches/csf-v10" | tr '\n' ' ')"
-[ "$(ls "$PANVK/patches/csf-v10" | grep -c '^0[01][0-9]-.*\.patch$')" = 12 ] || die "kit csf-v10 series is not 001-012"
+[ "$(ls "$PANVK/patches/csf-v10" | grep -c '^0[01][0-9]-.*\.patch$')" = 13 ] || die "kit csf-v10 series is not 001-012 plus 014"
 
 say "Mesa per sources.lock"
 REPO=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['mesaRepo'])" "$PANVK/sources.lock")

@@ -1,0 +1,78 @@
+From: onn field port (Walmart onn 4K Pro Gen 2, Mali-G310v2 MC1, kbase r44p1 CSF UK 1.20)
+Subject: [PATCH csf-v10 014] pan/bi: finish compiling a very large shader
+
+A fragment shader with 21141 SSA values, 2240 blocks and 27666 instructions
+(register demand 137, the RT64 renderer's largest) did not finish compiling:
+vkCreateGraphicsPipelines ran for more than five minutes at 100% CPU.
+
+1. find_all_dominated_predecessors ran a fixed |blocks|-1 passes over every
+   block for each loop header. Iterate to the fixed point instead, walking
+   the blocks in reverse so successors are seen first. Same result set.
+
+2. bi_register_allocate spilled in SSA form down to exactly the size of the
+   register file. The allocator then still failed (vectors need contiguous
+   registers) and its fallback spills one node per full pass: about 2.5 s a
+   pass here, up to 2000 passes. A shader that has to spill at all now
+   spills down to half the file. On this shader the targets 64, 56 and 48
+   kept failing; 32 passed on the first full-file pass. Shaders whose
+   demand fits the file are compiled exactly as before.
+
+diff --git a/src/panfrost/compiler/bifrost/bi_ra.c b/src/panfrost/compiler/bifrost/bi_ra.c
+index c5641e4384c..b1805991717 100644
+--- a/src/panfrost/compiler/bifrost/bi_ra.c
++++ b/src/panfrost/compiler/bifrost/bi_ra.c
+@@ -1291,7 +1291,16 @@ bi_register_allocate(bi_context *ctx)
+          if (ctx->inputs->is_blend)
+             UNREACHABLE("Blend shaders may not spill");
+ 
+-         bi_spill_ssa(ctx, regs_to_use);
++         /* Getting demand down to exactly the size of the file is not enough
++          * for the allocator below: vectors need contiguous registers, so
++          * it can still fail, and its fallback then spills a single node per
++          * full pass. On a shader with tens of thousands of values a pass
++          * takes seconds and the fallback allows 2000 of them. A shader that
++          * has to spill anyway spills down to half the file, which leaves
++          * that slack. Measured on a 21000-value shader with demand 137:
++          * targets 64, 56 and 48 kept failing, 32 passed on the first pass.
++          */
++         bi_spill_ssa(ctx, MIN2(regs_to_use, BI_MAX_REGS / 2));
+          spill_count += bi_lower_spill(ctx, spill_count);
+ 
+          /* By default, we use packed TLS addressing on Valhall.
+diff --git a/src/panfrost/compiler/bifrost/bifrost_compile.c b/src/panfrost/compiler/bifrost/bifrost_compile.c
+index 7322b404685..b5be50b68e3 100644
+--- a/src/panfrost/compiler/bifrost/bifrost_compile.c
++++ b/src/panfrost/compiler/bifrost/bifrost_compile.c
+@@ -4652,15 +4652,26 @@ find_all_dominated_predecessors(const bi_context *ctx, bi_block *b,
+ 
+    BITSET_CLEAR_COUNT(out, 0, ctx->num_blocks);
+ 
+-   /* If the CFG was one long chain, we would require |blocks|-1 iters to
+-    * propagate the in_loop info all the way through.
++   /* Propagate in_loop from successors to predecessors until nothing changes.
++    * The result is the same as running a fixed |blocks|-1 passes, which is
++    * what a CFG that is one long chain needs in the worst case, but a fixed
++    * count costs |blocks|^2 per loop header: minutes of CPU for a shader with
++    * thousands of blocks. Walking the blocks backwards visits successors
++    * first, so most loops settle in one pass plus one pass that finds no
++    * change.
+     */
+-   for (uint32_t iter = 0; iter < ctx->num_blocks - 1; ++iter) {
+-      bi_foreach_block(ctx, block) {
++   bool progress = true;
++   while (progress) {
++      progress = false;
++      bi_foreach_block_rev(ctx, block) {
++         if (BITSET_TEST(out, block->index) ||
++             !BITSET_TEST(dominators, block->index))
++            continue;
++
+          bi_foreach_successor(block, succ) {
+-            if ((succ == b || BITSET_TEST(out, succ->index)) &&
+-                BITSET_TEST(dominators, block->index)) {
++            if (succ == b || BITSET_TEST(out, succ->index)) {
+                BITSET_SET(out, block->index);
++               progress = true;
+                break;
+             }
+          }

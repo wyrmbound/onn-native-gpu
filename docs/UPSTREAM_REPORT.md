@@ -188,6 +188,29 @@ Same driver 93079e2d, other titles: Mario 20 min clean (36,120 frames), NFS 20 m
 
 **Reproducibility note.** The 001-013 binary in the first prebuilt release (sha256 0ac69e67...) is not byte-reproducible from this kit's source: a clean rebuild of the same 001-013 source gives 3c4b8ff3..., so that binary came from an older build-directory state. The current release is a clean build of 001-012 (93079e2d...).
 
+**Update 2026-11-12: a deterministic reproducer, and a workaround. Still open as a driver bug.** Super Metroid (a 64-bit SDL2 Android port drawing through SDL_Renderer, GL via zink) hits the same 0x88 within 2 s of its first frame, every time (5 of 5 on 001-012 and on 001-014), at job 75 to 195 on subqueue 0. Like Tyrian it uploads a texture every frame. With that reproducer, one 14 s run per switch:
+
+| Switch | Result |
+|---|---|
+| none | 0x88 |
+| `PANVK_DEBUG=sync` | no fault (300 frames) |
+| `ZINK_DEBUG=noreorder` | no fault (720 frames, full speed) |
+| `PANVK_DEBUG=copy_gfx`, `no_crc`, `no_wb_mmap`, `no_user_mmap_sync`, `cached_before_coherent`, `linear,noafbc` | 0x88 |
+| `ZINK_DEBUG=flushsync`, `sync`, `norp` | 0x88 |
+
+With `ZINK_DEBUG=noreorder` Super Metroid then ran 180 s clean (9,780 frames, 55 fps) and Tyrian ran 3 of 3 70 s runs clean; switching reordering back on brought the fault back at once in Super Metroid. Frame rates were unchanged by the switch on Tyrian, SoH and 2Ship. zink's reordering moves buffer and texture uploads into a second command buffer that is submitted ahead of the frame's own, so the reading is that PanVK mishandles that pair of command buffers in one submit (waiting for each submit to finish, `PANVK_DEBUG=sync`, also hides it). `apkrun/run_apk.sh` now sets `ZINK_DEBUG=noreorder` for every APK game and stops a game whose free memory collapses. The driver-side cause is not found.
+
+## Finding 8: the Bifrost compiler does not finish on a very large shader
+
+**Status: fixed locally by patch 014; a proposal, not reviewed upstream.** Diddy Kong Racing's renderer (RT64) compiles one fragment shader with 21,141 SSA values, 2,240 blocks and 27,666 instructions, register demand 137. `vkCreateGraphicsPipelines` did not return (5.5 minutes and still going; one thread at 100% CPU, no Vulkan calls).
+
+Two causes, found by sampling the spinning thread's pc with a CPU-time timer:
+
+1. `find_all_dominated_predecessors` (`bifrost_compile.c`) ran a fixed `num_blocks - 1` passes over all blocks for every loop header. 014 iterates to the fixed point, walking blocks in reverse. The result set is the same.
+2. `bi_register_allocate` (`bi_ra.c`) spills in SSA form down to exactly the size of the register file (64), then the allocator still fails, and its fallback spills one node per full pass: about 2.5 s per pass on this shader, up to 2000 passes. Pre-spill target against outcome on this shader, pipeline cache cleared each time: 64, 56 and 48 kept failing (26+ passes each when stopped); 32 and 16 passed on the first full-file pass, about 5 s in all. 014 makes a shader that has to spill at all spill down to half the file. Shaders with demand of 64 or less compile exactly as before.
+
+With 014 the game renders correctly (13 to 15 fps in its attract demo at its default 2x internal resolution). RT64 saves a pipeline cache, so later starts skip the compile. Regression on the same build: Mario 29.7 fps, NFS 46 fps, Tyrian, SoH, 2Ship and Super Metroid run.
+
 ## The patch set as carried here (`patches/csf-v10/`)
 
 All apply in order after the stock `g610-v10-csf` series with `apply-patches.sh`'s strict no-offset/no-fuzz check. A clean base `5a07217f034` plus the series reproduces our working tree byte for byte.

@@ -1,0 +1,1 @@
+{ global: ANativeWindow_*; __emutls_get_address; __cxa_demangle; local: *; };

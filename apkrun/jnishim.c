@@ -6,11 +6,37 @@
 
 static int g_dummy; static jchar g_empty_jchars[1]; static char g_scratch[4096];
 static JNIEnv g_env; static JavaVM g_vm;
+#define NAMED(...) do { static int left = 200; if (left > 0) { left--; fprintf(stderr, "jnishim: " __VA_ARGS__); fputc(10, stderr); } } while (0)
 #define ONCE(n) do { static int seen; if (!seen) { seen = 1; fprintf(stderr, "jnishim: %s" "\n", n); } } while (0)
+
+#include <stdlib.h>
+static struct { char name[64]; } g_meths[128]; static int g_nmeth;
+static void *meth(const char *name)
+{
+    for (int i = 0; i < g_nmeth; i++) if (!strcmp(g_meths[i].name, name ? name : "")) return &g_meths[i];
+    if (g_nmeth == 128) return &g_dummy;
+    snprintf(g_meths[g_nmeth].name, sizeof g_meths[0].name, "%s", name ? name : "");
+    return &g_meths[g_nmeth++];
+}
+static struct { char text[1024]; } g_dirstr;
+static const char *const g_dir_methods[] = { "getDataRootPathFromNative" /* 2Ship */, "romFolder" /* Gen1Recomp */ };
+static jobject string_answer(jmethodID m)
+{
+    const char *p = (const char *)m;
+    if (p < g_meths[0].name || p >= g_meths[128].name) return NULL;
+    for (size_t i = 0; i < sizeof g_dir_methods / sizeof *g_dir_methods; i++)
+        if (!strcmp(p, g_dir_methods[i])) {
+            const char *d = getenv("APKRUN_DATA");
+            snprintf(g_dirstr.text, sizeof g_dirstr.text, "%s", d ? d : ".");
+            fprintf(stderr, "jnishim: %s() -> %s" "\n", p, g_dirstr.text);
+            return (jobject)&g_dirstr;
+        }
+    return NULL;
+}
 
 static jint shim_GetVersion(JNIEnv * a0) { ONCE("GetVersion"); return JNI_VERSION_1_6; }
 static jclass shim_DefineClass(JNIEnv* a0, const char* a1, jobject a2, const jbyte* a3, jsize a4) { ONCE("DefineClass"); return NULL; }
-static jclass shim_FindClass(JNIEnv* a0, const char* a1) { ONCE("FindClass"); return (jclass)&g_dummy; }
+static jclass shim_FindClass(JNIEnv* a0, const char* a1) { ONCE("FindClass"); NAMED("FindClass %s", a1 ? a1 : "?"); return (jclass)&g_dummy; }
 static jmethodID shim_FromReflectedMethod(JNIEnv* a0, jobject a1) { ONCE("FromReflectedMethod"); return NULL; }
 static jfieldID shim_FromReflectedField(JNIEnv* a0, jobject a1) { ONCE("FromReflectedField"); return NULL; }
 static jobject shim_ToReflectedMethod(JNIEnv* a0, jclass a1, jmethodID a2, jboolean a3) { ONCE("ToReflectedMethod"); return NULL; }
@@ -37,10 +63,10 @@ static jobject shim_NewObjectV(JNIEnv* a0, jclass a1, jmethodID a2, va_list a3) 
 static jobject shim_NewObjectA(JNIEnv* a0, jclass a1, jmethodID a2, const jvalue* a3) { ONCE("NewObjectA"); return (jobject)&g_dummy; }
 static jclass shim_GetObjectClass(JNIEnv* a0, jobject a1) { ONCE("GetObjectClass"); return (jclass)&g_dummy; }
 static jboolean shim_IsInstanceOf(JNIEnv* a0, jobject a1, jclass a2) { ONCE("IsInstanceOf"); return 0; }
-static jmethodID shim_GetMethodID(JNIEnv* a0, jclass a1, const char* a2, const char* a3) { ONCE("GetMethodID"); return (jmethodID)&g_dummy; }
-static jobject shim_CallObjectMethod(JNIEnv* a0, jobject a1, jmethodID a2, ...) { ONCE("CallObjectMethod"); return NULL; }
-static jobject shim_CallObjectMethodV(JNIEnv* a0, jobject a1, jmethodID a2, va_list a3) { ONCE("CallObjectMethodV"); return NULL; }
-static jobject shim_CallObjectMethodA(JNIEnv* a0, jobject a1, jmethodID a2, const jvalue* a3) { ONCE("CallObjectMethodA"); return NULL; }
+static jmethodID shim_GetMethodID(JNIEnv* a0, jclass a1, const char* a2, const char* a3) { ONCE("GetMethodID"); NAMED("GetMethodID %s %s", a2 ? a2 : "?", a3 ? a3 : "?"); return (jmethodID)meth(a2); return (jmethodID)&g_dummy; }
+static jobject shim_CallObjectMethod(JNIEnv* a0, jobject a1, jmethodID a2, ...) { ONCE("CallObjectMethod"); { jobject s_ = string_answer(a2); if (s_) return s_; } return NULL; }
+static jobject shim_CallObjectMethodV(JNIEnv* a0, jobject a1, jmethodID a2, va_list a3) { ONCE("CallObjectMethodV"); { jobject s_ = string_answer(a2); if (s_) return s_; } return NULL; }
+static jobject shim_CallObjectMethodA(JNIEnv* a0, jobject a1, jmethodID a2, const jvalue* a3) { ONCE("CallObjectMethodA"); { jobject s_ = string_answer(a2); if (s_) return s_; } return NULL; }
 static jboolean shim_CallBooleanMethod(JNIEnv* a0, jobject a1, jmethodID a2, ...) { ONCE("CallBooleanMethod"); return 0; }
 static jboolean shim_CallBooleanMethodV(JNIEnv* a0, jobject a1, jmethodID a2, va_list a3) { ONCE("CallBooleanMethodV"); return 0; }
 static jboolean shim_CallBooleanMethodA(JNIEnv* a0, jobject a1, jmethodID a2, const jvalue* a3) { ONCE("CallBooleanMethodA"); return 0; }
@@ -98,7 +124,7 @@ static jdouble shim_CallNonvirtualDoubleMethodA(JNIEnv* a0, jobject a1, jclass a
 static void shim_CallNonvirtualVoidMethod(JNIEnv* a0, jobject a1, jclass a2, jmethodID a3, ...) { ONCE("CallNonvirtualVoidMethod");  }
 static void shim_CallNonvirtualVoidMethodV(JNIEnv* a0, jobject a1, jclass a2, jmethodID a3, va_list a4) { ONCE("CallNonvirtualVoidMethodV");  }
 static void shim_CallNonvirtualVoidMethodA(JNIEnv* a0, jobject a1, jclass a2, jmethodID a3, const jvalue* a4) { ONCE("CallNonvirtualVoidMethodA");  }
-static jfieldID shim_GetFieldID(JNIEnv* a0, jclass a1, const char* a2, const char* a3) { ONCE("GetFieldID"); return (jfieldID)&g_dummy; }
+static jfieldID shim_GetFieldID(JNIEnv* a0, jclass a1, const char* a2, const char* a3) { ONCE("GetFieldID"); NAMED("GetFieldID %s %s", a2 ? a2 : "?", a3 ? a3 : "?"); return (jfieldID)&g_dummy; }
 static jobject shim_GetObjectField(JNIEnv* a0, jobject a1, jfieldID a2) { ONCE("GetObjectField"); return NULL; }
 static jboolean shim_GetBooleanField(JNIEnv* a0, jobject a1, jfieldID a2) { ONCE("GetBooleanField"); return 0; }
 static jbyte shim_GetByteField(JNIEnv* a0, jobject a1, jfieldID a2) { ONCE("GetByteField"); return 0; }
@@ -117,10 +143,10 @@ static void shim_SetIntField(JNIEnv* a0, jobject a1, jfieldID a2, jint a3) { ONC
 static void shim_SetLongField(JNIEnv* a0, jobject a1, jfieldID a2, jlong a3) { ONCE("SetLongField");  }
 static void shim_SetFloatField(JNIEnv* a0, jobject a1, jfieldID a2, jfloat a3) { ONCE("SetFloatField");  }
 static void shim_SetDoubleField(JNIEnv* a0, jobject a1, jfieldID a2, jdouble a3) { ONCE("SetDoubleField");  }
-static jmethodID shim_GetStaticMethodID(JNIEnv* a0, jclass a1, const char* a2, const char* a3) { ONCE("GetStaticMethodID"); return (jmethodID)&g_dummy; }
-static jobject shim_CallStaticObjectMethod(JNIEnv* a0, jclass a1, jmethodID a2, ...) { ONCE("CallStaticObjectMethod"); return NULL; }
-static jobject shim_CallStaticObjectMethodV(JNIEnv* a0, jclass a1, jmethodID a2, va_list a3) { ONCE("CallStaticObjectMethodV"); return NULL; }
-static jobject shim_CallStaticObjectMethodA(JNIEnv* a0, jclass a1, jmethodID a2, const jvalue* a3) { ONCE("CallStaticObjectMethodA"); return NULL; }
+static jmethodID shim_GetStaticMethodID(JNIEnv* a0, jclass a1, const char* a2, const char* a3) { ONCE("GetStaticMethodID"); NAMED("GetStaticMethodID %s %s", a2 ? a2 : "?", a3 ? a3 : "?"); return (jmethodID)meth(a2); return (jmethodID)&g_dummy; }
+static jobject shim_CallStaticObjectMethod(JNIEnv* a0, jclass a1, jmethodID a2, ...) { ONCE("CallStaticObjectMethod"); { jobject s_ = string_answer(a2); if (s_) return s_; } return NULL; }
+static jobject shim_CallStaticObjectMethodV(JNIEnv* a0, jclass a1, jmethodID a2, va_list a3) { ONCE("CallStaticObjectMethodV"); { jobject s_ = string_answer(a2); if (s_) return s_; } return NULL; }
+static jobject shim_CallStaticObjectMethodA(JNIEnv* a0, jclass a1, jmethodID a2, const jvalue* a3) { ONCE("CallStaticObjectMethodA"); { jobject s_ = string_answer(a2); if (s_) return s_; } return NULL; }
 static jboolean shim_CallStaticBooleanMethod(JNIEnv* a0, jclass a1, jmethodID a2, ...) { ONCE("CallStaticBooleanMethod"); return 0; }
 static jboolean shim_CallStaticBooleanMethodV(JNIEnv* a0, jclass a1, jmethodID a2, va_list a3) { ONCE("CallStaticBooleanMethodV"); return 0; }
 static jboolean shim_CallStaticBooleanMethodA(JNIEnv* a0, jclass a1, jmethodID a2, const jvalue* a3) { ONCE("CallStaticBooleanMethodA"); return 0; }
@@ -148,7 +174,7 @@ static jdouble shim_CallStaticDoubleMethodA(JNIEnv* a0, jclass a1, jmethodID a2,
 static void shim_CallStaticVoidMethod(JNIEnv* a0, jclass a1, jmethodID a2, ...) { ONCE("CallStaticVoidMethod");  }
 static void shim_CallStaticVoidMethodV(JNIEnv* a0, jclass a1, jmethodID a2, va_list a3) { ONCE("CallStaticVoidMethodV");  }
 static void shim_CallStaticVoidMethodA(JNIEnv* a0, jclass a1, jmethodID a2, const jvalue* a3) { ONCE("CallStaticVoidMethodA");  }
-static jfieldID shim_GetStaticFieldID(JNIEnv* a0, jclass a1, const char* a2, const char* a3) { ONCE("GetStaticFieldID"); return (jfieldID)&g_dummy; }
+static jfieldID shim_GetStaticFieldID(JNIEnv* a0, jclass a1, const char* a2, const char* a3) { ONCE("GetStaticFieldID"); NAMED("GetStaticFieldID %s %s", a2 ? a2 : "?", a3 ? a3 : "?"); return (jfieldID)&g_dummy; }
 static jobject shim_GetStaticObjectField(JNIEnv* a0, jclass a1, jfieldID a2) { ONCE("GetStaticObjectField"); return NULL; }
 static jboolean shim_GetStaticBooleanField(JNIEnv* a0, jclass a1, jfieldID a2) { ONCE("GetStaticBooleanField"); return 0; }
 static jbyte shim_GetStaticByteField(JNIEnv* a0, jclass a1, jfieldID a2) { ONCE("GetStaticByteField"); return 0; }
@@ -168,12 +194,12 @@ static void shim_SetStaticLongField(JNIEnv* a0, jclass a1, jfieldID a2, jlong a3
 static void shim_SetStaticFloatField(JNIEnv* a0, jclass a1, jfieldID a2, jfloat a3) { ONCE("SetStaticFloatField");  }
 static void shim_SetStaticDoubleField(JNIEnv* a0, jclass a1, jfieldID a2, jdouble a3) { ONCE("SetStaticDoubleField");  }
 static jstring shim_NewString(JNIEnv* a0, const jchar* a1, jsize a2) { ONCE("NewString"); return (jstring)&g_dummy; }
-static jsize shim_GetStringLength(JNIEnv* a0, jstring a1) { ONCE("GetStringLength"); return 0; }
+static jsize shim_GetStringLength(JNIEnv* a0, jstring a1) { ONCE("GetStringLength"); if ((void *)a1 == (void *)&g_dirstr) return (jsize)strlen(g_dirstr.text); return 0; }
 static const jchar* shim_GetStringChars(JNIEnv* a0, jstring a1, jboolean* a2) { ONCE("GetStringChars"); return g_empty_jchars; }
 static void shim_ReleaseStringChars(JNIEnv* a0, jstring a1, const jchar* a2) { ONCE("ReleaseStringChars");  }
 static jstring shim_NewStringUTF(JNIEnv* a0, const char* a1) { ONCE("NewStringUTF"); return (jstring)&g_dummy; }
-static jsize shim_GetStringUTFLength(JNIEnv* a0, jstring a1) { ONCE("GetStringUTFLength"); return 0; }
-static const char* shim_GetStringUTFChars(JNIEnv* a0, jstring a1, jboolean* a2) { ONCE("GetStringUTFChars"); return ""; }
+static jsize shim_GetStringUTFLength(JNIEnv* a0, jstring a1) { ONCE("GetStringUTFLength"); if ((void *)a1 == (void *)&g_dirstr) return (jsize)strlen(g_dirstr.text); return 0; }
+static const char* shim_GetStringUTFChars(JNIEnv* a0, jstring a1, jboolean* a2) { ONCE("GetStringUTFChars"); if ((void *)a1 == (void *)&g_dirstr) return g_dirstr.text; return ""; }
 static void shim_ReleaseStringUTFChars(JNIEnv* a0, jstring a1, const char* a2) { ONCE("ReleaseStringUTFChars");  }
 static jsize shim_GetArrayLength(JNIEnv* a0, jarray a1) { ONCE("GetArrayLength"); return 0; }
 static jobjectArray shim_NewObjectArray(JNIEnv* a0, jsize a1, jclass a2, jobject a3) { ONCE("NewObjectArray"); return (jobjectArray)&g_dummy; }

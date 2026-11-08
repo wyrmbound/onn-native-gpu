@@ -56,8 +56,10 @@ always goes to the Android home and ends the session.
 - **A GPU hang with no fault after a few seconds of a real game** means the tiler-heap renewal patch (001) is
   missing.
 - **A game loses the GPU in its first minutes with `CSF group 0 fatal error ... exception 0x88` then `zink: DEVICE
-  LOST`** (GPU_SHAREABILITY_FAULT): open, intermittent, seen on Tyrian (SDL3 + GL via zink) only; Mario and NFS ran
-  clean. Kill the game process when it happens: left running, it collapses free memory and the box can hang. Patch 013
+  LOST`** (GPU_SHAREABILITY_FAULT): cause still open. Seen on Tyrian (intermittent) and Super Metroid (every run),
+  both GL via zink with a texture upload every frame; Mario and NFS ran clean. `apkrun/run_apk.sh` sets
+  `ZINK_DEBUG=noreorder`, which avoids it in both, and stops a game that loses the GPU anyway: left running, it
+  collapses free memory and the box can hang. Patch 013
   (one CSG per VkQueue) is withdrawn: it survived no Tyrian run (0/3) while 001-012 survived 4/5. Do not re-add it.
   See Finding 7 in `docs/UPSTREAM_REPORT.md`.
 - **The box watchdog-reboots 1-7 minutes into a sustained 3D game** is the platform, not the driver:
