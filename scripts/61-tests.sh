@@ -10,7 +10,7 @@ export MSYS_NO_PATHCONV=1
 : "${BOX:?set BOX in kit.env}"
 a() { "$ADB" -s "$BOX" "$@" </dev/null; }
 "$ADB" connect "$BOX" >/dev/null 2>&1 || true
-[ "$(a get-state 2>/dev/null)" = device ] || die "box $BOX is not on adb"
+[ "$(a get-state 2>/dev/null | tr -d '\r')" = device ] || die "box $BOX is not on adb"
 
 ENV="cd $BOX_PB && LD_LIBRARY_PATH=$BOX_PB"
 ICD=$BOX_PB/libvulkan_panfrost.so

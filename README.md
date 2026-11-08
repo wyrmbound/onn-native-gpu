@@ -47,7 +47,8 @@ your own GSI, which we do not redistribute), 5 for your own Mario build, and 6 a
 game, ROM, game assets or Google system files.
 
 `onnshell/` is [OnnShell](https://github.com/wyrmbound/onnshell), the launcher app whose zero-copy display shows the
-game.
+game. It also has a game Store (search, and the exact game version each port needs), a home Games row that
+follows whatever is in `/data/local/tmp/games`, and an in-game performance overlay (fps, temperature, memory).
 
 ## What is here
 
