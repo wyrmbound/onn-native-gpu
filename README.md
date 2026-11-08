@@ -48,7 +48,8 @@ game, ROM, game assets or Google system files.
 
 `onnshell/` is [OnnShell](https://github.com/wyrmbound/onnshell), the launcher app whose zero-copy display shows the
 game. It also has a game Store (search, and the exact game version each port needs), a home Games row that
-follows whatever is in `/data/local/tmp/games`, and an in-game performance overlay (fps, temperature, memory).
+follows whatever is in `/data/local/tmp/games`, an in-game performance overlay (fps, temperature, memory), and a corner window: hold Share in a game and it keeps
+playing in a corner over Netflix or any app, with the controller still driving the game.
 
 ## What is here
 
@@ -61,6 +62,7 @@ follows whatever is in `/data/local/tmp/games`, and an in-game performance overl
 | `app/FrameReceiverView.java` | The early (copying) receiver; the zero-copy app side lives in the launcher app. |
 | `vkshim/` | The Vulkan loader shim and ONNM4 WSI (`build.sh` regenerates the dispatch from Mesa's `vk.xml`), plus `wsitest`/`vktest`. |
 | `apkrun/` | Runner for 64-bit Android game APKs: loads `libmain.so` with a JNI shim, `run_apk.sh` launch script, `apkinstall.sh`. SDL3 shims for titles that ask for haptic/sensor or the Android window pointer. |
+| `onngrab/` | `libonngrab.so`, preloaded into every game by the run scripts. For OnnShell's corner window (picture in picture): on a signal it grabs the game's evdev devices, so the controller drives the game and not the app playing full screen behind it; PS brings the game back, Share swaps game audio. |
 | `tools/` | Diagnosis tools from the freeze hunt: `gpubench` (timed GPU clear loop), `csgprobe` (reads kbase CSG slot counts), `keepalive` (steady GPU submits), `memhog` (CPU memcpy DDR load), `memtest` (slow wide memory walk and a memory shield, for the pattern-vs-traffic runs). |
 | `tests/` | The milestone harnesses: m1 clear, m2 triangle, m3 streamed frames, m4 zero-copy, m5 EGL/GLES on zink, m6 SDL GLES, m7 SDL audio, m8 SDL gamepad. |
 | `docs/` | Design notes, port status, the upstream report with root causes, the bootloader check, and `NFS_RUNS.md` (every freeze A/B run). |

@@ -57,5 +57,7 @@ for t in 6:m6_sdl_test 7:m7_sdl_audio 8:m8_sdl_input; do
   "$BIN/aarch64-linux-android29-clang" -O1 -DSDL_MAIN_HANDLED "$KIT/tests/${t#*:}.c" -I"$SDL_SRC/include" \
     -o "$PB/m${t%%:*}" "$PB/libSDL2-2.0.so.0" -ldl -lm
 done
-ls -l "$PB/libSDL2-2.0.so.0" "$PB/m6" "$PB/m7" "$PB/m8"
+# libonngrab: the run scripts preload it so OnnShell's corner window (picture in picture) can hand the pad to the game alone
+"$BIN/aarch64-linux-android29-clang" -O2 -fPIC -shared "$KIT/onngrab/onngrab.c" -o "$PB/libonngrab.so" -ldl
+ls -l "$PB/libSDL2-2.0.so.0" "$PB/m6" "$PB/m7" "$PB/m8" "$PB/libonngrab.so"
 echo "OK sdl: libSDL2-2.0.so.0 + m6..m8 staged in $PB"

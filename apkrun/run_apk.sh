@@ -21,4 +21,5 @@ export SDL_GAMECONTROLLERCONFIG='05009b514c050000cc09000000800000,PS4 Controller
       SDL_AUDIODRIVER=disk SDL_AUDIO_DRIVER=disk SDL_DISKAUDIOFILE=/proc/self/fd/3 SDL_AUDIO_DISK_OUTPUT_FILE=/proc/self/fd/3 \
       MESA_LOADER_DRIVER_OVERRIDE=zink ZINK_VK_ICD="$PB/libvulkan_panfrost.so" \
       APKRUN_DATA="$G/data" HOME="$G/data" LD_LIBRARY_PATH="$G:$PB" \
+      LD_PRELOAD="$PB/libonngrab.so" \
       "$PB/linker64" "$PB/apkrun" "$G/$LIB" "$@" 3>&1 1>>"$G/game.log" 2>&1; } | toybox nc 127.0.0.1 7332

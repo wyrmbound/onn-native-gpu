@@ -68,6 +68,9 @@ always goes to the Android home and ends the session.
 - **A Vulkan-native APK title fails at window or surface creation**: it needs `SDL_VULKAN_LIBRARY` pointing at
   `vkshim/libvulkan.so` (`apkrun/run_apk.sh` sets it), and adb launches of the display activity must pass
   `--ez launch false --ez fresh true` like the home tile, or the old session takes the buffer offer.
+- **Corner window (picture in picture):** the game must run with `LD_PRELOAD=$PB/libonngrab.so` (both run scripts set it;
+  `40-sdl.sh` builds it). Without it the corner window still works, but every pad press also reaches the app playing
+  full screen. `tools/grabtest /dev/input/eventN` prints `busy` while a game holds the pad.
 - **The DualShock 4** on this kernel needs the `SDL_GAMECONTROLLERCONFIG` line in `run_sm64.sh`; without it the right
   stick reads as the triggers and Mario crouches.
 - **The game must link as PIE** (`NO_PIE=0`); Android's linker refuses `ET_EXEC`.

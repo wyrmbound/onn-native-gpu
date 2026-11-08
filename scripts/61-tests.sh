@@ -28,7 +28,7 @@ reset_display() {
   a shell 'kill $(pidof linker64) 2>/dev/null; pkill -9 -f "com.xplsh.onnshell:bridg[e]"' || true
   sleep 1
 }
-leave_display() { a shell "input keyevent KEYCODE_BACK" || true; reset_display; }
+leave_display() { a shell "am start -a android.intent.action.MAIN -c android.intent.category.HOME >/dev/null 2>&1" || true; reset_display; }
 
 reset_display
 run M1 "$ENV ./linker64 $BOX_PB/m1 $ICD"
