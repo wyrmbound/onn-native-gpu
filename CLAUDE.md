@@ -58,7 +58,8 @@ always goes to the Android home and ends the session.
 - **The box watchdog-reboots 1-7 minutes into a sustained 3D game even with 013** is the platform, not the driver:
   a CPU-only memcpy loop at ~8.7 GB/s reboots this box the same way, with an empty last_kmsg. Nothing in Mesa fixes
   it; see Finding 6 in `docs/UPSTREAM_REPORT.md` before spending any time on it. 2D titles are unaffected. A 65 W supply
-  in place of the stock 10 W one does not help.
+  in place of the stock 10 W one does not help. Capping the GPU clock (devfreq max_freq, reachable through the vendor SystemControl HIDL
+  service) does not help either, and DDR frequency is fixed at 1584 MHz; the deaths are not thermal (<= 52 C).
 - **A Vulkan-native APK title fails at window or surface creation**: it needs `SDL_VULKAN_LIBRARY` pointing at
   `vkshim/libvulkan.so` (`apkrun/run_apk.sh` sets it), and adb launches of the display activity must pass
   `--ez launch false --ez fresh true` like the home tile, or the old session takes the buffer offer.

@@ -149,7 +149,9 @@ Then the GPU was taken out of the picture: a 3-thread CPU `memcpy` loop over 64 
 
 Why this still belongs in the report: Finding 5's table and claim were built while this fault was active underneath, so some of its "died" rows (E1/E3/F1 with 3 groups) may carry a platform contribution. The one-CSG-per-queue argument stands on its own merits (cross-CSG waits during rotation are a real hazard on a 1-slot-starved firmware) and 013 did move Tyrian from minutes to 27+ minutes, but the clean before/after for it should be re-run on a board without this lockup before it is presented as proven.
 
-**For other people on Amlogic S905X5M boards:** if your 3D workloads reboot the box with an empty last_kmsg, run a CPU memcpy loop first. If that reboots it too, stop looking in Mesa.
+**GPU clock cap tested (2026-11-08, through the vendor SystemControl HIDL service, which lets an ordinary app read and write `/sys/class/devfreq/fd000000.valhall/max_freq`).** Mario at a hard 500 MHz (59% of stock, never exceeded on 87 heartbeats) died by watchdog at 7:38, as long as uncapped NFS the same morning (7:11). DDR frequency reads a fixed 1584 MHz (DMC 792) in every sample, loaded or idle, so there is no memory DVFS to lower. Every death was at 52 C or below, far under the 65 C throttle point, so heat is ruled out too. Side finding: NFS under a lowered cap took a GPU_SHAREABILITY_FAULT (CSF fatal 0x00c00488, device lost, no reboot) twice, never seen at stock clock; Mario under the same cap did not fault. Also, after one death the box watchdog-rebooted twice more while idle, about a minute after each boot. Run table: capped-runs section of the NFS notes.
+
+**For other people on Amlogic S905X5M boards:** if your 3D workloads reboot the box with an empty last_kmsg, run a CPU memcpy loop first. If that reboots it too, stop looking in Mesa; capping the GPU clock will not save you either.
 
 ---
 

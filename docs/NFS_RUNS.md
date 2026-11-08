@@ -128,3 +128,48 @@ What this means for games on this box:
 Driver work that stands regardless: 013 (one CSG per queue) and the NFS launch fixes (apkrun SDL_Init/SDL_GetPointerProperty
 shims, SDL_VULKAN_LIBRARY, tile launch flags). Finding 5's before/after should be re-validated on a board without this
 lockup before it is presented upstream as proven.
+
+## Capped runs (Haxxor Jr, 2026-11-08 10:02-11:14)
+
+Brief: `docs/capped-run-brief.md` (owner: "Yes, run capped"), amended by Helper 64 (settle gate: uptime >= 600 s and
+soc_thermal flat/falling x3 before each capped launch). Tool: OnnShell's SystemControl HIDL hook (`docs/sysctl-probe.md`);
+GPU cap = `/sys/class/devfreq/fd000000.valhall/max_freq`, read back before every launch. Heartbeat 5 s (game pid, valhall
+cur_freq, aml_ddr/freq, soc_thermal from `dumpsys thermalservice` "Current temperatures from HAL"; soc_thermal is the only
+zone). Every launch: `ZeroCopyActivity --ez launch false --ez fresh true --es game <id>`, nobody touching the pad unless noted.
+
+| Run | Title | Cap (max_freq read back) | Outcome | GPU cur_freq seen | DDR | soc_thermal | Last heartbeat | File |
+|---|---|---|---|---|---|---|---|---|
+| C0 | NFS MW | none (852000000) | **watchdog reboot at ~7:11** (launch 10:02:43, uptime ~9.8 h) | 852 MHz on all 79 beats | 1584 MHz throughout | not logged | 10:09:54 | cap-C0.txt |
+| C1 a1 | NFS MW | 666666666 -> **666667000** | invalid: cap not applied, GPU 852 MHz (kHz round-up lands above the 666666666 OPP, driver picks 852); picture froze ~10:24:45 (GPU idle, process alive), killed 10:25:05 | 852 then 285 | 1584 | 49-50 C | 10:25:06 | cap-C1.txt.attempt1 |
+| (owner) | NFS MW | none (852000000 restored) | owner relaunched by hand 10:25:15, no heartbeat; **watchdog reboot ~10:27:28** (~2:10) | - | - | - | - | - |
+| C1 a2 | NFS MW | **666666000** | ran at 500 MHz, one 852 MHz beat at 10:39:25 = owner pressed the remote (input-boost preheat passes the cap); guard stopped it, killed 10:39:44. From launch on, kernel logs `get_devfreq_mali_freq, idx:-1` every ~1 s (driver's own table has no 666666000), persisting after max_freq was restored | 500 (+1x 852) | 1584 | 47.5-49.6 C | 10:39:25 | cap-C1-attempt2.txt |
+| C1 a3 | NFS MW | 666666000 (same boot as a2) | invalid: **GPU_SHAREABILITY_FAULT** in AS1-AS4 6 s after launch, no image, sound only; GPU idle 285; killed 10:43:53 | 285 | 1584 | 47-48 C | 10:43:28 | cap-C1-attempt3.txt |
+| (reboot) | - | - | owner-approved `adb reboot` 10:45:47 to clear the idx:-1 state; after boot idx:-1 = 0, max_freq 852000000 | - | - | - | - | - |
+| **C1** | NFS MW | **500000000** (exact OPP, kHz-aligned; owner-approved substitute for 666) | **GPU_SHAREABILITY_FAULT at 11:00:27 (~4:28)**: MESA "CSF group 0 fatal error 0x00c00488", vkGetSemaphoreCounterValue -4 (device lost), rendering stopped, process alive, **no reboot**; stopped by hand 11:01:47. No idx:-1 | 500 MHz until the fault, then 285 | 1584 | 49.8-52.6 C | 11:01:26 | cap-C1.txt, shots/C1 |
+| **M1** | Mario (games/sm64, zink on PanVK) | **500000000** (same boot as C1, after C1's fault) | **watchdog reboot at ~7:38** (launch 11:04:24); no GPU fault, rendered to the end | 400-500 MHz, never above | 1584 | 49.8-51.5 C (51.2 C at death) | 11:12:02 | cap-M1.txt, shots/M1 |
+
+Also: after C0's death the box rebooted **twice more while idle** (boots 10:11:11, 10:12:13, 10:13:46, all
+`watchdog_reboot`, kernel silent), with no game running and nothing calling writeSysfs, but with `hidden_api_policy=1`
+and the new OnnShell hook installed (reads only, and the heartbeat had stopped before the third). First idle reboot loop on
+record. It did not repeat after the reboots at 10:27 or 11:12.
+
+Reading:
+- **The GPU cap does not prevent the watchdog death.** Mario at a hard 500 MHz (59% of stock clock, never exceeded on
+  87 beats) died at 7:38, as long as the uncapped C0 (7:11) and inside the uncapped spread (54-455 s for NFS; Mario ~6 min).
+- **Not heat.** M1 died at 51.2 C, and every death today was at 52 C or less, far below the 65 C throttle point. The idle
+  boot loop after C0 is not explained by temperature either (47-52 C at those boots).
+- **DDR stays at 1584 MHz** (DMC 792) in every beat, capped or not, idle or loaded: DDR frequency is fixed on this build,
+  so the GPU clock is the only DVFS knob, and it does not help. `aml_ddr/bandwidth` needs `aml_ddr/mode` enabled
+  (a write, not done).
+- **The devfreq cap path is not clean on this kbase.** 666 MHz cannot be set (666666666 runs at 852; 666666000 puts the
+  Amlogic platform code into idx:-1). Input events pass the cap through the power HAL preheat. NFS under a cap took a
+  GPU_SHAREABILITY_FAULT twice (a3 at 666666000, C1 at 500000000), never seen in any earlier run or at stock clock; Mario
+  under the same 500 MHz cap did not fault. Treat "lowered max_freq + NFS" as a new GPU fault trigger worth separating
+  from the watchdog death; not chased further.
+- Screenshots (`adb exec-out screencap`, every 30 s): they capture only OnnShell's overlay on black, not the zero-copy
+  game frame, so they cannot show a frozen game.
+
+Box at the end (11:14): max_freq 852000000 (read back; the cap does not survive a reboot), governor simple_ondemand,
+`hidden_api_policy` deleted (null), no game running, default driver and `games/run_apk.sh` untouched
+(md5 75de243e6a0f74a19d0ed0b5b3c6ca6b). Writes made during the series: devfreq max_freq, `hidden_api_policy`, and
+the owner-approved `adb reboot`.
