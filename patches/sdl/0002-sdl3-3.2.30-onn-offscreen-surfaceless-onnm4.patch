@@ -1,0 +1,406 @@
+SDL3 3.2.30 changes for the onn box (arm64 bionic, EGL surfaceless + zink, ONNM4 zero-copy present).
+Port of 0001 (SDL2 2.30.11) including its later additions; everything is active only when ONNM4 is set.
+- offscreen GLES: load EGL on the surfaceless platform (0x31DD) instead of EGL device enumeration
+- offscreen GLES: ONNM4 present hook after CreateContext and MakeCurrent; SwapWindow presents into app buffers;
+  GetProcAddress hands out a glBindFramebuffer wrapper that remaps FBO 0 to the current app buffer
+- offscreen window and display: 1280x720 (the app's buffer size), SetWindowSize keeps it
+- disk audio: open the device at 48 kHz S16 stereo (OnnShell's AudioSink format); SDL converts the game's stream
+- new sdl_onnm4_present.c/.h: receive 3 dma-buf fds on @onn-m4, import as EGLImage FBOs with a shared depth
+  renderbuffer, ack frames over 127.0.0.1:7331
+Build note: the shipped library's SONAME must be libSDL3.so (APK libs' verneed entries name that file);
+onn-pathb/onnbuild/build-sdl3.sh rewrites it in place after the build.
+Apply: cd SDL3-3.2.30 && patch -p1 < this.patch
+
+diff -ruN a/src/audio/disk/SDL_diskaudio.c b/src/audio/disk/SDL_diskaudio.c
+--- a/src/audio/disk/SDL_diskaudio.c	2026-11-07 14:07:58.441287139 -0400
++++ b/src/audio/disk/SDL_diskaudio.c	2026-11-07 14:07:58.445071583 -0400
+@@ -110,6 +110,15 @@
+         return false;
+     }
+ 
++    /* onn: on the box the "file" is a pipe to OnnShell's AudioSink, which plays one fixed format. Open at that
++     * format and let SDL convert whatever the game asked for. */
++    if (!recording && SDL_getenv("ONNM4")) {
++        device->spec.format = SDL_AUDIO_S16;
++        device->spec.channels = 2;
++        device->spec.freq = 48000;
++        SDL_UpdatedAudioDeviceFormat(device);
++    }
++
+     device->hidden->io_delay = ((device->sample_frames * 1000) / device->spec.freq);
+ 
+     const char *hint = SDL_GetHint(SDL_HINT_AUDIO_DISK_TIMESCALE);
+diff -ruN a/src/video/offscreen/SDL_offscreenopengles.c b/src/video/offscreen/SDL_offscreenopengles.c
+--- a/src/video/offscreen/SDL_offscreenopengles.c	2026-11-07 14:07:58.394138339 -0400
++++ b/src/video/offscreen/SDL_offscreenopengles.c	2026-11-07 14:07:58.398810636 -0400
+@@ -25,25 +25,18 @@
+ #include "SDL_offscreenopengles.h"
+ #include "SDL_offscreenvideo.h"
+ #include "SDL_offscreenwindow.h"
++#include "sdl_onnm4_present.h"
+ 
+ // EGL implementation of SDL OpenGL support
+ 
+ bool OFFSCREEN_GLES_LoadLibrary(SDL_VideoDevice *_this, const char *path)
+ {
+-    if (!SDL_EGL_LoadLibraryOnly(_this, path)) {
+-        return false;
+-    }
+-
+-    /* driver_loaded gets incremented by SDL_GL_LoadLibrary when we return,
+-       but SDL_EGL_InitializeOffscreen checks that we're loaded before then,
+-       so temporarily bump it since we know that LoadLibraryOnly succeeded. */
+-    bool result;
+-    _this->gl_config.driver_loaded++;
+-    result = SDL_EGL_InitializeOffscreen(_this, 0);
+-    _this->gl_config.driver_loaded--;
+-    if (!result) {
++    /* onn: the stock path enumerates EGL_EXT_device_base devices, which never selects zink on this build
++       (DRM node = meson display, sw device = swrast). Use the surfaceless platform directly, like m5h. */
++    if (!SDL_EGL_LoadLibrary(_this, path, (NativeDisplayType)0, 0x31DD /* EGL_PLATFORM_SURFACELESS_MESA */)) {
+         return false;
+     }
++    _this->egl_data->is_offscreen = true;
+ 
+     if (!SDL_EGL_ChooseConfig(_this)) {
+         return false;
+@@ -59,6 +52,12 @@
+     SDL_GLContext context;
+     context = SDL_EGL_CreateContext(_this, offscreen_window->egl_surface);
+ 
++    /* onn: SDL_EGL_CreateContext makes the context current itself (not through GL_MakeCurrent), and games
++       rarely call SDL_GL_MakeCurrent afterwards, so run the present hook here too (idempotent). */
++    if (context) {
++        onnm4_after_make_current(window);
++    }
++
+     return context;
+ }
+ 
+@@ -66,16 +65,28 @@
+ {
+     if (window) {
+         EGLSurface egl_surface = window->internal->egl_surface;
+-        return SDL_EGL_MakeCurrent(_this, egl_surface, context);
++        if (!SDL_EGL_MakeCurrent(_this, egl_surface, context)) {
++            return false;
++        }
++        onnm4_after_make_current(window);
++        return true;
+     } else {
+         return SDL_EGL_MakeCurrent(_this, NULL, NULL);
+     }
+ }
+ 
++SDL_FunctionPointer OFFSCREEN_GLES_GetProcAddress(SDL_VideoDevice *_this, const char *proc)
++{
++    return (SDL_FunctionPointer)onnm4_filter_proc(proc, (void *)SDL_EGL_GetProcAddressInternal(_this, proc));
++}
++
+ bool OFFSCREEN_GLES_SwapWindow(SDL_VideoDevice *_this, SDL_Window *window)
+ {
+     SDL_WindowData *offscreen_wind = window->internal;
+ 
++    if (onnm4_swap(window) == 0) {
++        return true;
++    }
+     return SDL_EGL_SwapBuffers(_this, offscreen_wind->egl_surface);
+ }
+ 
+diff -ruN a/src/video/offscreen/SDL_offscreenopengles.h b/src/video/offscreen/SDL_offscreenopengles.h
+--- a/src/video/offscreen/SDL_offscreenopengles.h	2026-11-07 14:07:58.404768553 -0400
++++ b/src/video/offscreen/SDL_offscreenopengles.h	2026-11-07 14:07:58.406598771 -0400
+@@ -28,7 +28,6 @@
+ #include "../SDL_sysvideo.h"
+ #include "../SDL_egl_c.h"
+ 
+-#define OFFSCREEN_GLES_GetProcAddress  SDL_EGL_GetProcAddressInternal
+ #define OFFSCREEN_GLES_UnloadLibrary   SDL_EGL_UnloadLibrary
+ #define OFFSCREEN_GLES_GetSwapInterval SDL_EGL_GetSwapInterval
+ #define OFFSCREEN_GLES_SetSwapInterval SDL_EGL_SetSwapInterval
+@@ -37,6 +36,7 @@
+ extern bool OFFSCREEN_GLES_LoadLibrary(SDL_VideoDevice *_this, const char *path);
+ extern SDL_GLContext OFFSCREEN_GLES_CreateContext(SDL_VideoDevice *_this, SDL_Window *window);
+ extern bool OFFSCREEN_GLES_MakeCurrent(SDL_VideoDevice *_this, SDL_Window *window, SDL_GLContext context);
++extern SDL_FunctionPointer OFFSCREEN_GLES_GetProcAddress(SDL_VideoDevice *_this, const char *proc);
+ extern bool OFFSCREEN_GLES_SwapWindow(SDL_VideoDevice *_this, SDL_Window *window);
+ 
+ #endif // SDL_VIDEO_DRIVER_OFFSCREEN && SDL_VIDEO_OPENGL_EGL
+diff -ruN a/src/video/offscreen/SDL_offscreenvideo.c b/src/video/offscreen/SDL_offscreenvideo.c
+--- a/src/video/offscreen/SDL_offscreenvideo.c	2026-11-07 14:07:58.420509862 -0400
++++ b/src/video/offscreen/SDL_offscreenvideo.c	2026-11-07 14:07:58.422106048 -0400
+@@ -129,6 +129,10 @@
+     mode.format = SDL_PIXELFORMAT_XRGB8888;
+     mode.w = 1024;
+     mode.h = 768;
++    if (SDL_getenv("ONNM4")) { // onn: fullscreen windows take the display size, which must match the app's buffers
++        mode.w = 1280;
++        mode.h = 720;
++    }
+     if (SDL_AddBasicVideoDisplay(&mode) == 0) {
+         return false;
+     }
+diff -ruN a/src/video/offscreen/SDL_offscreenwindow.c b/src/video/offscreen/SDL_offscreenwindow.c
+--- a/src/video/offscreen/SDL_offscreenwindow.c	2026-11-07 14:07:58.411901256 -0400
++++ b/src/video/offscreen/SDL_offscreenwindow.c	2026-11-07 14:07:58.413523491 -0400
+@@ -27,6 +27,7 @@
+ #include "../SDL_egl_c.h"
+ 
+ #include "SDL_offscreenwindow.h"
++#include "sdl_onnm4_present.h"
+ 
+ bool OFFSCREEN_CreateWindow(SDL_VideoDevice *_this, SDL_Window *window, SDL_PropertiesID create_props)
+ {
+@@ -48,6 +49,14 @@
+ 
+     offscreen_window->sdl_window = window;
+ 
++    /* onn: with ONNM4 the window IS the app's 1280x720 HardwareBuffer, so every window gets that size and the
++     * game lays out to fill it. shortcut: buffer size is fixed by ZeroCopyActivity; read it from the bridge if
++     * that ever changes. */
++    if (SDL_getenv("ONNM4")) {
++        window->w = window->windowed.w = window->floating.w = 1280;
++        window->h = window->windowed.h = window->floating.h = 720;
++    }
++
+ #ifdef SDL_VIDEO_OPENGL_EGL
+     if (window->flags & SDL_WINDOW_OPENGL) {
+ 
+@@ -72,6 +81,7 @@
+ void OFFSCREEN_DestroyWindow(SDL_VideoDevice *_this, SDL_Window *window)
+ {
+     SDL_WindowData *offscreen_window = window->internal;
++    onnm4_destroy();
+ 
+     if (offscreen_window) {
+ #ifdef SDL_VIDEO_OPENGL_EGL
+@@ -85,6 +95,10 @@
+ 
+ void OFFSCREEN_SetWindowSize(SDL_VideoDevice *_this, SDL_Window *window)
+ {
++    if (SDL_getenv("ONNM4")) { // onn: the buffer size is fixed, so the window stays 1280x720
++        SDL_SendWindowEvent(window, SDL_EVENT_WINDOW_RESIZED, 1280, 720);
++        return;
++    }
+     SDL_SendWindowEvent(window, SDL_EVENT_WINDOW_RESIZED, window->pending.w, window->pending.h);
+ }
+ #endif // SDL_VIDEO_DRIVER_OFFSCREEN
+diff -ruN a/src/video/offscreen/sdl_onnm4_present.c b/src/video/offscreen/sdl_onnm4_present.c
+--- a/src/video/offscreen/sdl_onnm4_present.c	1969-12-31 20:00:00.000000000 -0400
++++ b/src/video/offscreen/sdl_onnm4_present.c	2026-11-07 14:07:58.429839170 -0400
+@@ -0,0 +1,203 @@
++/* ONNM4 present for SDL3 (offscreen video driver): the SDL2 module from patch 0001, ported.
++ *
++ * OnnShell's ZeroCopyActivity owns N HardwareBuffers; the BufferBridge hands us their dma-buf fds on abstract
++ * unix socket @onn-m4 (same wire format as m4_helper.c). Each fd becomes an EGLImage (linear RGBA8) wrapped in a
++ * GL framebuffer that stays bound as the game's "default" framebuffer; SDL_GL_SwapWindow does glFinish, tells
++ * the app "buffer i ready" over 127.0.0.1:7331, waits for its ack before reusing a buffer and binds the next FBO.
++ * Binds of FBO 0 (or of the FBO the renderer saw at startup) are remapped to the current buffer.
++ * Active only with env ONNM4=1. Window size must equal the app's buffer size (1280x720).
++ */
++#include "SDL_internal.h"
++#include <errno.h>
++#include <stdio.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++#include <arpa/inet.h>
++#include <netinet/in.h>
++#include <sys/socket.h>
++#include <sys/un.h>
++#include <unistd.h>
++
++#include <SDL3/SDL_egl.h>
++
++#define MAXBUF 4
++#define EGL_LINUX_DMA_BUF_EXT 0x3270
++#define EGL_LINUX_DRM_FOURCC_EXT 0x3271
++#define EGL_DMA_BUF_PLANE0_FD_EXT 0x3272
++#define EGL_DMA_BUF_PLANE0_OFFSET_EXT 0x3273
++#define EGL_DMA_BUF_PLANE0_PITCH_EXT 0x3274
++#define EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT 0x3443
++#define EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT 0x3444
++#define DRM_FORMAT_ABGR8888 0x34324241  /* 'AB24': R,G,B,A bytes in memory = Android RGBA_8888 */
++#define GL_FRAMEBUFFER 0x8D40
++#define GL_RENDERBUFFER 0x8D41
++#define GL_COLOR_ATTACHMENT0 0x8CE0
++#define GL_FRAMEBUFFER_COMPLETE 0x8CD5
++
++typedef void *EGLImageKHR;
++typedef unsigned GLenum, GLuint; typedef int GLint, GLsizei;
++
++static struct {
++    int ready, count, cur;
++    int fds[MAXBUF]; uint32_t strides[MAXBUF], w, h;
++    int app;                      /* TCP to ZeroCopyActivity */
++    int busy[MAXBUF];
++    GLuint fbo[MAXBUF], rbo[MAXBUF];
++    EGLImageKHR img[MAXBUF];
++    void (*glBindFramebuffer)(GLenum, GLuint);
++    void (*glFinish)(void);
++} S;
++
++static int read_all(int fd, void *p, size_t n)
++{
++    unsigned char *b = p;
++    while (n) { ssize_t k = read(fd, b, n); if (k <= 0) { if (k < 0 && errno == EINTR) continue; return -1; } b += k; n -= k; }
++    return 0;
++}
++static int write_all(int fd, const void *p, size_t n)
++{
++    const unsigned char *b = p;
++    while (n) { ssize_t k = write(fd, b, n); if (k < 0) { if (errno == EINTR) continue; return -1; } b += k; n -= k; }
++    return 0;
++}
++
++/* Same handshake as m4_helper.c: listen on @onn-m4, receive header + fds + strides. */
++static int recv_buffers(void)
++{
++    const char *name = getenv("PB_SOCK") ? getenv("PB_SOCK") : "onn-m4";
++    int ls = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0); if (ls < 0) return -1;
++    struct sockaddr_un sa = { .sun_family = AF_UNIX };
++    size_t nl = strlen(name); memcpy(sa.sun_path + 1, name, nl);
++    socklen_t sl = offsetof(struct sockaddr_un, sun_path) + 1 + nl;
++    if (bind(ls, (struct sockaddr *)&sa, sl) < 0 || listen(ls, 1) < 0) { close(ls); return -1; }
++    SDL_Log("onnm4: waiting for buffers on @%s", name);
++    int s = accept(ls, NULL, NULL); close(ls); if (s < 0) return -1;
++    uint32_t hdr[5]; char cbuf[CMSG_SPACE(sizeof(int) * MAXBUF)];
++    struct iovec iov = { hdr, sizeof hdr };
++    struct msghdr msg = { .msg_iov = &iov, .msg_iovlen = 1, .msg_control = cbuf, .msg_controllen = sizeof cbuf };
++    if (recvmsg(s, &msg, MSG_CMSG_CLOEXEC) != (ssize_t)sizeof hdr || hdr[0] != 0x4642344d || hdr[1] < 1 || hdr[1] > MAXBUF || hdr[4] != 1) { close(s); return -1; }
++    S.count = hdr[1]; S.w = hdr[2]; S.h = hdr[3];
++    if (read_all(s, S.strides, S.count * sizeof(uint32_t))) { close(s); return -1; }
++    int got = 0;
++    for (struct cmsghdr *c = CMSG_FIRSTHDR(&msg); c; c = CMSG_NXTHDR(&msg, c))
++        if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_RIGHTS) { got = (c->cmsg_len - CMSG_LEN(0)) / sizeof(int); memcpy(S.fds, CMSG_DATA(c), got * sizeof(int)); }
++    close(s);
++    if (got != S.count) return -1;
++    SDL_Log("onnm4: %d buffers %ux%u", S.count, S.w, S.h);
++    return 0;
++}
++
++static int connect_app(void)
++{
++    int fd = socket(AF_INET, SOCK_STREAM, 0); if (fd < 0) return -1;
++    struct sockaddr_in sa = { .sin_family = AF_INET, .sin_port = htons(getenv("PB_PORT") ? atoi(getenv("PB_PORT")) : 7331) };
++    inet_pton(AF_INET, getenv("PB_HOST") ? getenv("PB_HOST") : "127.0.0.1", &sa.sin_addr);
++    if (connect(fd, (struct sockaddr *)&sa, sizeof sa) < 0) { close(fd); return -1; }
++    return fd;
++}
++
++/* FBO-0 remap: SDL's GLES2 renderer (and some games) rebind "the window framebuffer" every frame, either 0 or
++ * whatever FBO was bound when they started (our fbo[0]). Route those binds to the buffer drawn this frame.
++ * The offscreen driver hands out this wrapper via OFFSCREEN_GLES_GetProcAddress; the real entry is kept here. */
++static void (*real_bind_fbo)(GLenum, GLuint);
++static void onnm4_bind_framebuffer(GLenum target, GLuint fb)
++{
++    if (S.ready) {
++        if (fb == 0) fb = S.fbo[S.cur];
++        else for (int i = 0; i < S.count; i++) if (fb == S.fbo[i]) { fb = S.fbo[S.cur]; break; }
++    }
++    real_bind_fbo(target, fb);
++}
++
++void *onnm4_filter_proc(const char *proc, void *real)
++{
++    if (real && getenv("ONNM4") && SDL_strcmp(proc, "glBindFramebuffer") == 0) {
++        real_bind_fbo = (void (*)(GLenum, GLuint))real;
++        return (void *)onnm4_bind_framebuffer;
++    }
++    return real;
++}
++
++/* Called once the GL context is current: import the dma-bufs and build the FBOs, bind the first. */
++void onnm4_after_make_current(SDL_Window *window)
++{
++    if (S.ready || !getenv("ONNM4")) return;
++    if (recv_buffers() < 0) { SDL_Log("onnm4: no buffers (is ZeroCopyActivity up?)"); return; }
++    int ww, wh; SDL_GetWindowSize(window, &ww, &wh);
++    if ((uint32_t)ww != S.w || (uint32_t)wh != S.h) SDL_Log("onnm4: WARNING window %dx%d != buffers %ux%u", ww, wh, S.w, S.h);
++
++    /* SDL dlopens libEGL rather than linking it, so every EGL call goes through GetProcAddress. */
++    EGLDisplay (*getCurDpy)(void) = (void *)SDL_GL_GetProcAddress("eglGetCurrentDisplay");
++    EGLint (*getErr)(void) = (void *)SDL_GL_GetProcAddress("eglGetError");
++    if (!getCurDpy || !getErr) { SDL_Log("onnm4: no EGL entry points"); return; }
++    EGLDisplay dpy = getCurDpy();
++    EGLImageKHR (*createImage)(EGLDisplay, EGLContext, unsigned, void *, const EGLint *) = (void *)SDL_GL_GetProcAddress("eglCreateImageKHR");
++    void (*imageRenderbuffer)(GLenum, EGLImageKHR) = (void *)SDL_GL_GetProcAddress("glEGLImageTargetRenderbufferStorageOES");
++    void (*genFbo)(GLsizei, GLuint *) = (void *)SDL_GL_GetProcAddress("glGenFramebuffers");
++    void (*genRbo)(GLsizei, GLuint *) = (void *)SDL_GL_GetProcAddress("glGenRenderbuffers");
++    void (*bindRbo)(GLenum, GLuint) = (void *)SDL_GL_GetProcAddress("glBindRenderbuffer");
++    void (*fboRbo)(GLenum, GLenum, GLenum, GLuint) = (void *)SDL_GL_GetProcAddress("glFramebufferRenderbuffer");
++    GLenum (*checkFbo)(GLenum) = (void *)SDL_GL_GetProcAddress("glCheckFramebufferStatus");
++    void (*rboStorage)(GLenum, GLenum, GLsizei, GLsizei) = (void *)SDL_GL_GetProcAddress("glRenderbufferStorage");
++    S.glBindFramebuffer = (void *)SDL_GL_GetProcAddress("glBindFramebuffer");
++    if (real_bind_fbo) S.glBindFramebuffer = real_bind_fbo; /* our own binds skip the remap */
++    S.glFinish = (void *)SDL_GL_GetProcAddress("glFinish");
++    if (!createImage || !imageRenderbuffer || !genFbo || !genRbo || !bindRbo || !fboRbo || !checkFbo || !rboStorage || !S.glBindFramebuffer || !S.glFinish) {
++        SDL_Log("onnm4: missing EGL/GL entry points (EGL_EXT_image_dma_buf_import / OES_EGL_image?)"); return;
++    }
++    /* One depth buffer shared by all FBOs: frames are sequential and the game clears depth each frame.
++     * The EGL pbuffer config carries no depth (zink exposes none on surfaceless), so the game's depth lives here.
++     * 24-bit via OES_depth24, falling back to 16-bit (N64 precision) if the FBO comes back incomplete. */
++    GLuint depth = 0; GLenum depthFmt = 0x81A6; /* GL_DEPTH_COMPONENT24 */
++    genRbo(1, &depth); bindRbo(GL_RENDERBUFFER, depth); rboStorage(GL_RENDERBUFFER, depthFmt, S.w, S.h);
++    for (int i = 0; i < S.count; i++) {
++        const EGLint attrs[] = { EGL_WIDTH, (EGLint)S.w, EGL_HEIGHT, (EGLint)S.h, EGL_LINUX_DRM_FOURCC_EXT, DRM_FORMAT_ABGR8888,
++            EGL_DMA_BUF_PLANE0_FD_EXT, S.fds[i], EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0, EGL_DMA_BUF_PLANE0_PITCH_EXT, (EGLint)S.strides[i],
++            EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT, 0, EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT, 0, EGL_NONE };
++        S.img[i] = createImage(dpy, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, attrs);
++        if (!S.img[i]) { SDL_Log("onnm4: eglCreateImageKHR failed for buffer %d (0x%x)", i, getErr()); return; }
++        genRbo(1, &S.rbo[i]); bindRbo(GL_RENDERBUFFER, S.rbo[i]); imageRenderbuffer(GL_RENDERBUFFER, S.img[i]);
++        genFbo(1, &S.fbo[i]); S.glBindFramebuffer(GL_FRAMEBUFFER, S.fbo[i]);
++        fboRbo(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, S.rbo[i]);
++        fboRbo(GL_FRAMEBUFFER, 0x8D00 /* GL_DEPTH_ATTACHMENT */, GL_RENDERBUFFER, depth);
++        GLenum st = checkFbo(GL_FRAMEBUFFER);
++        if (st != GL_FRAMEBUFFER_COMPLETE && depthFmt == 0x81A6) {
++            depthFmt = 0x81A5; /* GL_DEPTH_COMPONENT16 */
++            bindRbo(GL_RENDERBUFFER, depth); rboStorage(GL_RENDERBUFFER, depthFmt, S.w, S.h);
++            st = checkFbo(GL_FRAMEBUFFER);
++        }
++        if (st != GL_FRAMEBUFFER_COMPLETE) { SDL_Log("onnm4: FBO %d incomplete 0x%x", i, st); return; }
++    }
++    S.app = connect_app();
++    if (S.app < 0) { SDL_Log("onnm4: cannot reach the app on 127.0.0.1:7331"); return; }
++    S.cur = 0; S.glBindFramebuffer(GL_FRAMEBUFFER, S.fbo[0]);
++    S.ready = 1;
++    SDL_Log("onnm4: presenting into app buffers");
++}
++
++/* SwapWindow: finish, hand the current buffer to the app, pick the next free one. Returns -1 if inactive. */
++int onnm4_swap(SDL_Window *window)
++{
++    (void)window;
++    if (!S.ready) return -1;
++    S.glFinish();
++    uint32_t ready[3] = { 0x4452344d, (uint32_t)S.cur, 0 };
++    if (write_all(S.app, ready, sizeof ready)) { SDL_Log("onnm4: app went away"); S.ready = 0; return -1; }
++    S.busy[S.cur] = 1;
++    int next = (S.cur + 1) % S.count;
++    while (S.busy[next]) {
++        uint32_t done; if (read_all(S.app, &done, 4)) { S.ready = 0; return -1; }
++        if (done < (uint32_t)S.count) S.busy[done] = 0;
++    }
++    S.cur = next;
++    S.glBindFramebuffer(GL_FRAMEBUFFER, S.fbo[S.cur]);
++    return 0;
++}
++
++void onnm4_destroy(void)
++{
++    if (S.app > 0) close(S.app);
++    for (int i = 0; i < S.count; i++) if (S.fds[i] > 0) close(S.fds[i]);
++    memset(&S, 0, sizeof S);
++}
+diff -ruN a/src/video/offscreen/sdl_onnm4_present.h b/src/video/offscreen/sdl_onnm4_present.h
+--- a/src/video/offscreen/sdl_onnm4_present.h	1969-12-31 20:00:00.000000000 -0400
++++ b/src/video/offscreen/sdl_onnm4_present.h	2026-11-07 14:07:58.435501403 -0400
+@@ -0,0 +1,8 @@
++#ifndef SDL_ONNM4_PRESENT_H
++#define SDL_ONNM4_PRESENT_H
++/* SDL_Window is already in scope (SDL_sysvideo.h) where this is included. */
++void onnm4_after_make_current(SDL_Window *window);
++int onnm4_swap(SDL_Window *window);
++void onnm4_destroy(void);
++void *onnm4_filter_proc(const char *proc, void *real);
++#endif

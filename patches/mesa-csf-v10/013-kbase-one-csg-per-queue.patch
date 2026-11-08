@@ -1,0 +1,107 @@
+From: onn field port (Walmart onn 4K Pro Gen 2, Mali-G310v2 MC1, kbase r44p1 CSF UK 1.20)
+Subject: [PATCH csf-v10 013] panvk/csf: one kbase CSG per VkQueue with a CSI per subqueue
+
+Instead of one CSG with one CSI per PanVK subqueue (3 groups per VkQueue), 
+create a single group with cs_min = 3 and bind the VT, FRAG and COMPUTE CS 
+queues to it as CSI 0, 1 and 2, as the stock client is believed to do. This 
+cuts the CSG slot footprint from 3 to 1 per queue and makes the sibling syncs 
+intra-group. The group handle lives in panvk_gpu_queue::group_handle (unused 
+on kbase before); per-CSI USER_IO pages, doorbells and kicks were already per 
+CS queue and are unchanged; CSF errors are latched device wide and need no 
+per-group change. Teardown terminates the three CS queues, then the group. 
+Group priority stays HIGH. Fixes the hard SoC hang (GPU wedged during CSG 
+rotation, then a hardware watchdog reboot) seen while three HIGH priority 
+groups per queue competed with the system's groups (SurfaceFlinger, HWUI) for 
+CSG slots: Tyrian with the display on survived 12:45+ (20,820 frames) where 
+every earlier display-on run died in 2:48 to 4:30. Caveat from the original 
+code: some Android kbase stacks were seen to accept CSIs above 0 into a 
+scheduled CSG but never execute them.
+
+diff --git a/src/panfrost/vulkan/csf/panvk_queue.h b/src/panfrost/vulkan/csf/panvk_queue.h
+--- a/src/panfrost/vulkan/csf/panvk_queue.h
++++ b/src/panfrost/vulkan/csf/panvk_queue.h
+@@ -69,11 +69,8 @@
+    /* kbase-backed queues manage the CS ring buffer in userspace (the
+     * panthor kernel driver does the equivalent in kernel-owned rings). */
+    struct {
+-      /* kbase compatibility path: each PanVK subqueue owns a CSG and uses
+-       * CSI0.  Some Android kbase stacks accept later CSIs into a scheduled
+-       * CSG but never execute them. */
+-      uint32_t group_handle;
+-
++      /* kbase: the subqueue is CSI <subqueue id> of the queue's single CSG
++       * (panvk_gpu_queue::group_handle), like the stock client. */
+       struct pan_kmod_bo *ringbuf_bo;
+       void *ringbuf_cpu;
+       uint64_t ringbuf_dev;
+diff --git a/src/panfrost/vulkan/csf/panvk_vX_gpu_queue.c b/src/panfrost/vulkan/csf/panvk_vX_gpu_queue.c
+--- a/src/panfrost/vulkan/csf/panvk_vX_gpu_queue.c
++++ b/src/panfrost/vulkan/csf/panvk_vX_gpu_queue.c
+@@ -1027,12 +1027,12 @@
+       pan_kmod_bo_put(subq->kbase.ringbuf_bo);
+       subq->kbase.ringbuf_bo = NULL;
+       subq->kbase.user_io = NULL;
++   }
+ 
+-      if (subq->kbase.group_handle != UINT32_MAX) {
+-         kbase_kmod_csf_group_destroy(dev->kmod.dev,
+-                                      subq->kbase.group_handle);
+-         subq->kbase.group_handle = UINT32_MAX;
+-      }
++   /* All CSIs are unbound above; now the one group can go. */
++   if (queue->group_handle != UINT32_MAX) {
++      kbase_kmod_csf_group_destroy(dev->kmod.dev, queue->group_handle);
++      queue->group_handle = UINT32_MAX;
+    }
+ }
+ 
+@@ -1044,19 +1044,19 @@
+ 
+    queue->group_handle = UINT32_MAX;
+ 
+-   for (uint32_t i = 0; i < PANVK_SUBQUEUE_COUNT; i++)
+-      queue->subqueues[i].kbase.group_handle = UINT32_MAX;
++   /* One CSG per VkQueue with one CSI per subqueue (VT, FRAG, COMPUTE), so
++    * the queue occupies a single CSG slot and the sibling syncs are
++    * intra-group. */
++   if (kbase_kmod_csf_group_create(dev->kmod.dev, PANVK_SUBQUEUE_COUNT,
++                                   &queue->group_handle)) {
++      queue->group_handle = UINT32_MAX;
++      return panvk_errorf(dev, VK_ERROR_INITIALIZATION_FAILED,
++                          "Failed to create a kbase queue group");
++   }
+ 
+    for (uint32_t i = 0; i < PANVK_SUBQUEUE_COUNT; i++) {
+       struct panvk_subqueue *subq = &queue->subqueues[i];
+ 
+-      if (kbase_kmod_csf_group_create(dev->kmod.dev, 1,
+-                                      &subq->kbase.group_handle)) {
+-         result = panvk_errorf(dev, VK_ERROR_INITIALIZATION_FAILED,
+-                               "Failed to create a kbase queue group");
+-         goto err_destroy_group;
+-      }
+-
+       subq->kbase.ringbuf_bo =
+          pan_kmod_bo_alloc(dev->kmod.dev, dev->kmod.vm, KBASE_RINGBUF_SIZE,
+                            0);
+@@ -1101,7 +1101,7 @@
+       }
+ 
+       subq->kbase.user_io = kbase_kmod_csf_queue_bind(
+-         dev->kmod.dev, subq->kbase.group_handle, 0,
++         dev->kmod.dev, queue->group_handle, i,
+          subq->kbase.ringbuf_dev,
+          KBASE_RINGBUF_SIZE);
+       if (!subq->kbase.user_io) {
+@@ -1112,9 +1112,9 @@
+ 
+       subq->kbase.insert = 0;
+       subq->kbase.emitted_jobs = 0;
+-      mesa_logd("kbase: bound subqueue %u to group %u CSI0, ring CPU %p, "
++      mesa_logd("kbase: bound subqueue %u to group %u CSI%u, ring CPU %p, "
+                 "ring VA 0x%" PRIx64 ", user_io %p",
+-                i, subq->kbase.group_handle, subq->kbase.ringbuf_cpu,
++                i, queue->group_handle, i, subq->kbase.ringbuf_cpu,
+                 subq->kbase.ringbuf_dev,
+                 subq->kbase.user_io);
+    }

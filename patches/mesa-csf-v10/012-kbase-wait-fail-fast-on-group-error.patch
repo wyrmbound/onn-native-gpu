@@ -1,0 +1,33 @@
+From: onn field port (Walmart onn 4K Pro Gen 2, Mali-G310v2 MC1, kbase r44p1 CSF UK 1.20)
+Subject: [PATCH csf-v10 012] panvk/csf: fail a kbase seqno wait fast on a CSF group error
+
+Diagnostic. The completion wait spun up to the 10 s watchdog even after kbase 
+had reported a queue-group error. Check the latched error 
+(kbase_kmod_csf_has_error) on every loop iteration, log the last error type 
+and mark the queue lost.
+
+diff --git a/src/panfrost/vulkan/csf/panvk_vX_gpu_queue.c b/src/panfrost/vulkan/csf/panvk_vX_gpu_queue.c
+index 764bccaeb26..55d64d4c2fb 100644
+--- a/src/panfrost/vulkan/csf/panvk_vX_gpu_queue.c
++++ b/src/panfrost/vulkan/csf/panvk_vX_gpu_queue.c
+@@ -955,6 +955,20 @@ kbase_subqueue_wait_seqno(struct panvk_gpu_queue *queue, uint32_t subqueue,
+          }
+          prev_error_type = error_type;
+       }
++
++      /* A latched queue-group error means kbase faulted or terminated the
++       * group: the seqno will never move, so fail now instead of spinning
++       * until the watchdog. error_type is the kbase enum + 1, -1 if no
++       * notification was read during this wait. */
++      if (kbase_kmod_csf_has_error(dev->kmod.dev)) {
++         mesa_loge("kbase: CSF queue-group error (error_type %d) while waiting "
++                   "on subqueue %u job %" PRIu64 ", seqno %" PRIu64,
++                   prev_error_type, subqueue, target_seqno,
++                   (uint64_t)cell->seqno);
++         return vk_queue_set_lost(&queue->vk,
++                                  "kbase: CSF queue-group error %d on "
++                                  "subqueue %u", prev_error_type, subqueue);
++      }
+    }
+ 
+    bool completed =

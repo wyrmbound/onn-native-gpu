@@ -53,6 +53,15 @@ always goes to the Android home and ends the session.
 - **Never set `LIBGL_ALWAYS_SOFTWARE`**: zink then demands a CPU Vulkan device and fails on the Mali.
 - **A GPU hang with no fault after a few seconds of a real game** means the tiler-heap renewal patch (001) is
   missing.
+- **The box watchdog-reboots a few minutes into a 2D game with the display on** (no kernel log, no DEVICE LOST)
+  means patch 013 (one CSG per VkQueue) is missing.
+- **The box watchdog-reboots 1-7 minutes into a sustained 3D game even with 013** is the platform, not the driver:
+  a CPU-only memcpy loop at ~8.7 GB/s reboots this box the same way, with an empty last_kmsg. Nothing in Mesa fixes
+  it; see Finding 6 in `docs/UPSTREAM_REPORT.md` before spending any time on it. 2D titles are unaffected. A 65 W supply
+  in place of the stock 10 W one does not help.
+- **A Vulkan-native APK title fails at window or surface creation**: it needs `SDL_VULKAN_LIBRARY` pointing at
+  `vkshim/libvulkan.so` (`apkrun/run_apk.sh` sets it), and adb launches of the display activity must pass
+  `--ez launch false --ez fresh true` like the home tile, or the old session takes the buffer offer.
 - **The DualShock 4** on this kernel needs the `SDL_GAMECONTROLLERCONFIG` line in `run_sm64.sh`; without it the right
   stick reads as the triggers and Mario crouches.
 - **The game must link as PIE** (`NO_PIE=0`); Android's linker refuses `ET_EXEC`.

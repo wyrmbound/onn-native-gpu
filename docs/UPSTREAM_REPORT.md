@@ -1,4 +1,5 @@
-# panvk-kbase on Mali-G310 (Amlogic S905X5M): four fixes + one note, validated up to a full game
+# panvk-kbase on Mali-G310 (Amlogic S905X5M): five fixes, one note and one platform fault, validated up to a full game
+
 
 
 Target: zenithblue-oss/panvk-kbase-android (Mesa PanVK over mali_kbase), profile `g610-v10-csf`, Mesa base `5a07217f034`.
@@ -94,6 +95,64 @@ Fix used here: `patches/csf-v10/001-kbase-tiler-heap-renewal-writer.patch` = the
 
 Related: the v10 profile also misses `csf-v11/038-crc-init-kmod-munmap.patch`, which is the same bug as Finding 2 — the fix exists upstream for v11 but never reaches v10. Worth auditing which other `csf-v11` patches are arch-agnostic CSF/kbase fixes that v10 needs.
 
+## Finding 5: cross-CSG waits between PanVK's per-subqueue groups wedge the GPU during CSG rotation, and the vendor GPU reset hard-locks the SoC
+
+**Symptom.** Every 64-bit game on this box watchdog-reboots the whole SoC after a few minutes. The hardware watchdog fires (boot reason `watchdog`), there is no kernel log (pstore, devfreq and kbase sysfs are root-only, dropbox has no last kmsg), and userspace sees no `VK_ERROR_DEVICE_LOST`: the kernel dies first. Process RSS, threads and maps stay flat up to the end, so it is not a leak.
+
+**Environment.** kbase r44p1, CSF UK 1.20, Amlogic S905X5M, Mali-G310 (arch 10). PanVK creates one kbase CSG per subqueue: 3 groups (VT, FRAG, COMPUTE), each with one CSI, per VkQueue, all at `BASE_QUEUE_GROUP_PRIORITY_HIGH`. The system has its own groups on the same GPU from the stock 32-bit Mali client (SurfaceFlinger, HWUI), which are active while the display is on.
+
+**Evidence.** No kernel evidence is readable without root, so the evidence is differential. Workloads: Tyrian (a GL game through zink, presenting through our zero-copy path) and keepalive (a small Vulkan client that submits a clear-only render pass of a 64x64 image in a loop, no present).
+
+| Run | Driver | Workload | Display | Our CSGs | Outcome |
+|---|---|---|---|---|---|
+| E1 | original baseline (001-008) | Tyrian, 2 s heartbeat | on | 3 active | box dead at 2:48 (28 fps), boot reason watchdog, RSS, threads and maps flat |
+| E3 | original baseline (001-008) | Tyrian + keepalive on a second device (180 submits/s) | on | 3 active + 3 (keepalive, 1 active) | game fps halved; game hit a kbase subqueue 2 timeout and zink DEVICE LOST at 1:15; keepalive kept going erratically; box dead at about 6:50 |
+| E0 | original baseline (001-008) | keepalive alone, 15 min | most likely off | 3, 1 active | survived, about 150k submits, no timeout |
+| F1 | 001-012 | Tyrian | asleep for 3 min (6.5 fps), then woken | 3 active | died 4:30 after the display woke (watchdog), 9,900 frames, no userspace DEVICE LOST |
+| X3 | 001-012 | keepalive alone, home screen animating | on | 3, 1 active | survived 900 s, 160,976 submits |
+| G1 | 001-013 | Tyrian, home screen alive | on | 1 (3 CSIs) | alive at 12:45+, 20,820 frames at 27.3 fps, no DEVICE LOST |
+
+keepalive is a plain Vulkan client on the same library, so before 013 its VkQueue also creates 3 groups. It only ever submits on one subqueue (a clear-only render pass, no draws), so it has no cross-group waits.
+
+**Claim.** Three high-priority CSGs per queue plus cross-CSG waits wedge the GPU under rotation; one CSG per queue (013) fixed the 2D title. Three active CSGs with cross-CSG waits, display on, died at 2:48 to 6:50 (E1, E3, F1). Keepalive alone survived 15 min (E0), three groups with only one active survived 15 min (X3), and Tyrian on 013 with one CSG survived 27 min (G1). 013 does not fix sustained 3D titles; see Finding 6.
+
+**Root cause (inferred from userspace only).** The trigger is cross-CSG synchronization during the firmware's group rotation: a CS in one of our groups waits on a sync object signalled by a sibling group while the firmware is suspending and resuming groups to share the CSG slots, including with the system's groups (SurfaceFlinger, HWUI). This wedges the GPU, and the vendor kernel's GPU reset then hard-locks the SoC instead of recovering, so the hardware watchdog reboots the box with no log and no DEVICE_LOST reaching userspace. We could not observe the firmware or the reset path directly.
+
+**Fix.** `patches/csf-v10/013-kbase-one-csg-per-queue.patch`: one CSG per VkQueue with `cs_min = 3`, and the VT, FRAG and COMPUTE CS queues bound to it as CSI 0, 1 and 2. This makes the sibling syncs intra-group, which removes the trigger, and also cuts our CSG slot footprint from 3 to 1 per queue. Per-CSI USER_IO pages, doorbells and kicks were already per CS queue; teardown terminates the three CS queues, then the group. Group priority stays HIGH. G1 (Tyrian, a 2D title) is the first display-on game run that survived: 27 min where every earlier one died in 2:48 to 6:50. This fix covers the 2D title only; sustained 3D titles still die on 013 (Finding 6).
+
+**Needed but not sufficient: csf-v11 077, 085 and 098.** Our csf-v10 009, 010 and 011 adapt them for v10 (SYSTEM scope for cross-subqueue sync signals, the desc ring and VkEvent syncs in CSF event memory, VERTEX_TILER_STARTED heap ops only on kbase). They were the right idea for cross-CSG waits and are kept, but they are not sufficient on this kbase: F1 and X3 ran with them (plus 012, fail fast on a group error), and F1 still died. Like 043 (Finding 4), they exist upstream for v11 but do not reach the v10 profile.
+
+**HIGH priority does not help here.** The groups are created at `BASE_QUEUE_GROUP_PRIORITY_HIGH` with the comment "resist CSG rotation so the Pixel kbase off-slot heap-reclaim shrinker cannot empty our tiler heaps under memory pressure" (`kbase_kmod.c`). That is a workaround for the Pixel heap shrinker. On this kbase every failing run already had all three groups at HIGH; it did not prevent the rotation hang. A MEDIUM priority variant is staged (`csf-v10-staged/013v2`) but has not been run.
+
+## Finding 6 (not a driver issue): sustained 3D titles hard-lock the SoC on 001-013, and so does a CPU memcpy loop
+
+**Status: RESOLVED as a platform fault, not PanVK/kbase. Nothing to fix in the driver; documented so nobody chases it again.**
+
+Same symptom as Finding 5 (watchdog reboot, no log, no DEVICE_LOST in userspace), with 013 applied, for 3D titles only. The rows below are what it looked like while we still thought it was ours.
+
+| Run | Workload | Driver / renewal | Outcome |
+|---|---|---|---|
+| G2 | Super Mario 64 (3D, GL via zink) | 013, display on | died at 5:50 |
+| N1 | NFS Most Wanted (3D, Vulkan direct, no zink) | 013, default renewal | died at about 3:00 |
+| N4 | NFS | 013, renewal on every graphics submit | died at about 0:22 |
+| N5 | NFS | 013 without 011 (stock heap ops), default renewal | died between 1:18 and 1:34 |
+| N5b | NFS | 013 without 011, renewal off (only firmware chunk recycling) | frames advancing, died at about 2:30 |
+| N3 | NFS | 013, renewal off | heap full at 0:44, group terminated cleanly, GPU idle, no reboot in 9 min |
+
+N3 survived only because the GPU went idle after the group was terminated; it is not a survival of 3D load.
+
+Reading: renewal frequency accelerates the death (N4 dies far sooner than N1), but sustained 3D rendering kills the SoC even without renewal (N5b). The 2D title on the same driver survives (G1, Finding 5).
+
+**What it turned out to be (2026-11-07, about 25 watchdog reboots of A/B runs, all on NFS Most Wanted, full table in `docs/NFS_RUNS.md`).** None of the driver-side variables changed the outcome: heap renewal off or every submit, a pre-sized heap with zero heap ioctls during the run, stock heap ops (no 011), HEAP_SET only on change, 16x16 tiles, geometry pad, `PANVK_DEBUG=sync`, CSG priority MEDIUM, frame rate capped to 9 fps, a GPU keepalive alongside, skipping the game's movies. The display path was cleared too: composition is a DEVICE overlay, the HWUI read of our dma-bufs removed, even no picture posted at all. GPU clock is identical with the panel on and off (timed clear loop, ratio 1.00), and `soc_thermal` sat at 48-53 C. The kernel's own `SYSTEM_LAST_KMSG` for every watchdog boot is empty below the header: no mali line, no GPU fault, no soft lockup, no oops. The CPUs stop without printing.
+
+Then the GPU was taken out of the picture: a 3-thread CPU `memcpy` loop over 64 MB buffers at about 8.7 GB/s, no game, no GPU work, panel on or off, reboots the box by watchdog on its own (three clean samples: 5.5 min, 55 s, and a 1-thread run that died within 10 s). NFS plus that loop dies in under 40 s, NFS alone in 1 to 7.5 min, the 2D title never. Time to death under the same configuration spans 54 to 455 s, so this is a random SoC lockup whose odds rise with DDR traffic, with no safe ceiling measurable from userspace. A 3D game is simply a heavy DDR client. 1080p output gave the longest NFS life (7.5 min) but still died; the game's own render scale at 33% did not help. A 65 W USB-C supply in place of the stock 10 W one changed nothing (CPU memcpy alone still died at about 4:50), so power delivery is ruled out.
+
+Why this still belongs in the report: Finding 5's table and claim were built while this fault was active underneath, so some of its "died" rows (E1/E3/F1 with 3 groups) may carry a platform contribution. The one-CSG-per-queue argument stands on its own merits (cross-CSG waits during rotation are a real hazard on a 1-slot-starved firmware) and 013 did move Tyrian from minutes to 27+ minutes, but the clean before/after for it should be re-run on a board without this lockup before it is presented as proven.
+
+**For other people on Amlogic S905X5M boards:** if your 3D workloads reboot the box with an empty last_kmsg, run a CPU memcpy loop first. If that reboots it too, stop looking in Mesa.
+
+---
+
 ## The patch set as carried here (`patches/csf-v10/`)
 
 All apply in order after the stock `g610-v10-csf` series with `apply-patches.sh`'s strict no-offset/no-fuzz check. A clean base `5a07217f034` plus the series reproduces our working tree byte for byte.
@@ -108,6 +167,11 @@ All apply in order after the stock `g610-v10-csf` series with `apply-patches.sh`
 | 006 dri-kopper-on-android | build real `kopper.c` for zink on Android | our GL path only |
 | 007 egl-surfaceless-zink-fallback | surfaceless takes the no-DRM probe for zink too | our GL path only (DRM node is the display controller) |
 | 008 android-log-stderr-sink | Mesa logs also to stderr on Android | dev convenience; with the bundled GSI liblog, Mesa's logcat sink produced no output at all, which hid every finding above until this patch |
+| 009 kbase-system-scope-subqueue-sync-signals | csf-v11/077 adapted for v10: SYSTEM scope for cross-subqueue sync signals | needed but not sufficient for **Finding 5** |
+| 010 kbase-desc-ring-and-vkevent-syncs-in-csf-event-memory | csf-v11/085 adapted for v10: desc ring and VkEvent syncs in CSF event memory | needed but not sufficient for **Finding 5** |
+| 011 kbase-vertex-tiler-started-heap-ops-only | csf-v11/098 verbatim, headers regenerated for v10 | needed but not sufficient for **Finding 5** |
+| 012 kbase-wait-fail-fast-on-group-error | check the latched CSF group error in the completion wait | diagnostic |
+| 013 kbase-one-csg-per-queue | one CSG with 3 CSIs per VkQueue instead of one CSG per subqueue | **Finding 5** |
 
 005-008 are specific to running GLES-on-zink from a bundled arm64 bionic runtime; they are listed so the tree is reproducible, not as proposals.
 

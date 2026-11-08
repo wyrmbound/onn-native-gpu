@@ -10,10 +10,15 @@ The box ships a 32-bit-only Android userspace and no Vulkan loader. This repo is
 game (arm64, SDL2 + GLES2)
   -> SDL2 offscreen video, EGL surfaceless         patches/sdl
   -> Mesa zink (GL on Vulkan), loads the ICD directly   patches/mesa-csf-v10 005-008
-  -> Mesa PanVK on mali_kbase (panvk-kbase-android, g610-v10-csf + fixes 001-004)
+  -> Mesa PanVK on mali_kbase (panvk-kbase-android, g610-v10-csf + fixes 001-004, 009-013)
   -> dma-buf frames handed to an Android app's HardwareBuffers (zero copy)  present/, app/
   -> app draws them on screen and plays the game's PCM audio
 ```
+
+Vulkan-native games (for example 64-bit Android game APKs built on SDL3) skip zink: `vkshim/libvulkan.so` is a small
+Vulkan loader for this box that loads PanVK directly and adds an ONNM4 window system, which presents into the same
+zero-copy buffers. `apkrun/` runs such an APK's native `libmain.so` as a shell process (the box's 32-bit userspace
+cannot install 64-bit APKs), with a JNI stand-in for the Java side the game expects.
 
 The 64-bit processes run as the adb shell user through a bundled arm64 bionic runtime (linker64, libc and the
 graphics HAL client libraries) taken from an Android 14 GSI. The app side is a launcher app holding Shizuku; a small
@@ -39,13 +44,16 @@ game.
 
 | Path | What |
 |---|---|
-| `patches/mesa-csf-v10/` | Patch series on top of [zenithblue-oss/panvk-kbase-android](https://github.com/zenithblue-oss/panvk-kbase-android) profile `g610-v10-csf`. 001, 002, 004 are driver fixes (offered upstream); 003 is carried but unexercised; 005-008 are only for this runtime (zink without a Vulkan loader, kopper on Android, surfaceless zink, Mesa logs to stderr). |
+| `patches/mesa-csf-v10/` | Patch series on top of [zenithblue-oss/panvk-kbase-android](https://github.com/zenithblue-oss/panvk-kbase-android) profile `g610-v10-csf`. 001, 002, 004 are driver fixes (offered upstream); 003 is carried but unexercised; 005-008 are only for this runtime (zink without a Vulkan loader, kopper on Android, surfaceless zink, Mesa logs to stderr); 009-011 are csf-v11 077/085/098 adapted for v10 (cross-subqueue sync scope, syncs in CSF event memory, heap ops); 012 fails a wait fast on a CSF group error; 013 uses one kbase CSG with three CSIs per VkQueue, which fixes the watchdog hang below. |
 | `patches/sdl/` | SDL 2.30.11: offscreen driver on EGL surfaceless, plus the present module that renders into the app's dma-bufs (with a depth buffer). |
 | `patches/sm64ex/` | sm64ex port for arm64 bionic + GLES2, build recipe (`BUILD.md`) and the launch script. **Bring your own ROM**; nothing here contains game data. |
 | `present/sdl_onnm4_present.c` | The present module source (also inside the SDL patch). |
 | `app/FrameReceiverView.java` | The early (copying) receiver; the zero-copy app side lives in the launcher app. |
+| `vkshim/` | The Vulkan loader shim and ONNM4 WSI (`build.sh` regenerates the dispatch from Mesa's `vk.xml`), plus `wsitest`/`vktest`. |
+| `apkrun/` | Runner for 64-bit Android game APKs: loads `libmain.so` with a JNI shim, `run_apk.sh` launch script, `apkinstall.sh`. SDL3 shims for titles that ask for haptic/sensor or the Android window pointer. |
+| `tools/` | Diagnosis tools from the freeze hunt: `gpubench` (timed GPU clear loop), `csgprobe` (reads kbase CSG slot counts), `keepalive` (steady GPU submits), `memhog` (CPU memcpy DDR load). |
 | `tests/` | The milestone harnesses: m1 clear, m2 triangle, m3 streamed frames, m4 zero-copy, m5 EGL/GLES on zink, m6 SDL GLES, m7 SDL audio, m8 SDL gamepad. |
-| `docs/` | Design notes, port status, the upstream report with root causes, and the bootloader check. |
+| `docs/` | Design notes, port status, the upstream report with root causes, the bootloader check, and `NFS_RUNS.md` (every freeze A/B run). |
 
 ## Findings worth knowing
 
@@ -59,14 +67,25 @@ See `docs/UPSTREAM_REPORT.md` for evidence. In short:
    surfaceless platform fixes it. SDL creates the context current through an unhooked path, so a present hook must
    also run at context creation.
 5. The DualShock 4 on the newer kernel `hid-playstation` driver needs an explicit SDL mapping on SDL 2.30.
+6. Three HIGH priority CSGs per VkQueue competing with the system's groups (display on) wedge the GPU during
+   firmware group rotation, and the vendor kernel's GPU reset then hard-locks the box (watchdog reboot, no log).
+   Patch 013 (one CSG with three CSIs per VkQueue) fixes it for 2D titles (27 min and counting).
+7. **Sustained 3D titles still watchdog-reboot this box after 1 to 7 minutes, and it is not the driver.** A CPU-only
+   memcpy loop at about 8.7 GB/s, with no GPU work at all, reboots it the same way with an empty last_kmsg, panel on
+   or off, on the stock 10 W supply or a 65 W one. It is a random SoC lockup whose odds rise with DDR traffic.
+   1080p output stretched one game to 7.5 minutes; nothing in userspace prevents it. See Finding 6 and
+   `docs/NFS_RUNS.md`.
 
 ## Status
 
 Validated on one unit: a full runner pass with every stage green and sm64ex playable with the pad. The bootloader is
-vendor-locked (`docs/BOOTLOADER_CHECK.md`), so this route is the route.
+vendor-locked (`docs/BOOTLOADER_CHECK.md`), so this route is the route. A Vulkan-native SDL3 title (a 64-bit
+Android game APK) renders through `vkshim` + `apkrun` at about 49 fps. 2D titles run indefinitely; sustained 3D
+titles are limited by the platform lockup above.
 
 ## License
 
 Our own code and docs: MIT (see `LICENSE`). The patch files modify third-party projects and fall under those
-projects' terms: Mesa (MIT), SDL (zlib), sm64ex (decompilation project; see its repository). No ROM, game assets,
+projects' terms: Mesa (MIT), SDL (zlib), sm64ex (decompilation project; see its repository). `apkrun/jni.h` is the
+Android Open Source Project's header (Apache 2.0). No ROM, game assets,
 game binaries or Google system binaries are distributed here.

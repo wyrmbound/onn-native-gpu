@@ -1,0 +1,367 @@
+From: onn field port (Walmart onn 4K Pro Gen 2, Mali-G310v2 MC1, kbase r44p1 CSF UK 1.20)
+Subject: [PATCH csf-v10 010] panvk/csf: keep the desc ring and VkEvent syncs in CSF event memory on kbase
+
+Adaptation of csf-v11/085. The render desc ringbuf syncobj came from 
+mempools.rw and VkEvent syncs from rw_nc, both ordinary memory: kbase never 
+re-checks a SYNC_WAIT on such a word once the waiting CSG has been evicted, 
+so the VT reserve can stay parked forever. v10 has no gpu_prerast tess syncs, 
+so instead of moving the ring sync into the queue syncobjs BO (v11) it gets 
+its own PAN_KMOD_BO_FLAG_CSF_EVENT BO, allocated the way init_queue() 
+allocates queue->syncobjs and released by the existing panvk_pool_free_mem(). 
+The reserve-side decrement uses panvk_cs_signal_scope() (needs csf-v10/009). 
+VkEvent syncs get their own CSF event BO on kbase, host Set/ResetEvent clean 
+the lines and issue KBASE_IOCTL_CS_EVENT_SIGNAL through a new optional 
+pan_kmod cs_event_signal op, GetEventStatus invalidates before reading. kmod, 
+panvk_event.h and panvk_vX_event.c hunks are 085 verbatim.
+
+diff --git a/src/panfrost/lib/kmod/kbase_kmod.c b/src/panfrost/lib/kmod/kbase_kmod.c
+index ec9fa129f7f..ccef8fdbe38 100644
+--- a/src/panfrost/lib/kmod/kbase_kmod.c
++++ b/src/panfrost/lib/kmod/kbase_kmod.c
+@@ -1848,6 +1848,23 @@ kbase_kmod_bo_wait(struct pan_kmod_bo *bo, int64_t timeout_ns,
+    return true;
+ }
+ 
++/* KBASE_IOCTL_CS_EVENT_SIGNAL is _IO (mali_kbase_ioctl.h, same as
++ * kbase_csf_uapi.h:302) and carries no payload, so it cannot go through
++ * pan_kmod_ioctl(). The kernel re-walks CSF event memory and resumes any
++ * CSG suspended on a wait the CPU just satisfied. A cache clean does not.
++ */
++static int
++kbase_kmod_cs_event_signal(struct pan_kmod_dev *dev)
++{
++   if (ioctl(dev->fd, KBASE_IOCTL_CS_EVENT_SIGNAL)) {
++      mesa_loge("kbase: KBASE_IOCTL_CS_EVENT_SIGNAL failed: %s",
++                strerror(errno));
++      return -1;
++   }
++
++   return 0;
++}
++
+ static int
+ kbase_kmod_flush_bo_map_syncs(struct pan_kmod_dev *dev)
+ {
+@@ -2099,6 +2116,7 @@ const struct pan_kmod_ops kbase_kmod_ops = {
+    .bo_mmap                = kbase_kmod_bo_mmap,
+    .bo_munmap              = kbase_kmod_bo_munmap,
+    .flush_bo_map_syncs     = kbase_kmod_flush_bo_map_syncs,
++   .cs_event_signal        = kbase_kmod_cs_event_signal,
+    .bo_wait                = kbase_kmod_bo_wait,
+    .bo_make_evictable      = kbase_kmod_bo_make_evictable,
+    .bo_make_unevictable    = kbase_kmod_bo_make_unevictable,
+diff --git a/src/panfrost/lib/kmod/pan_kmod.c b/src/panfrost/lib/kmod/pan_kmod.c
+index 1e6ca23c833..277df8cf637 100644
+--- a/src/panfrost/lib/kmod/pan_kmod.c
++++ b/src/panfrost/lib/kmod/pan_kmod.c
+@@ -277,6 +277,15 @@ pan_kmod_flush_bo_map_syncs_locked(struct pan_kmod_dev *dev)
+    util_dynarray_clear(&dev->pending_bo_syncs.array);
+ }
+ 
++int
++pan_kmod_cs_event_signal(struct pan_kmod_dev *dev)
++{
++   if (!dev->ops->cs_event_signal)
++      return 0;
++
++   return dev->ops->cs_event_signal(dev);
++}
++
+ void
+ pan_kmod_flush_bo_map_syncs(struct pan_kmod_dev *dev)
+ {
+diff --git a/src/panfrost/lib/kmod/pan_kmod.h b/src/panfrost/lib/kmod/pan_kmod.h
+index cdcaba9c5a2..250750fe710 100644
+--- a/src/panfrost/lib/kmod/pan_kmod.h
++++ b/src/panfrost/lib/kmod/pan_kmod.h
+@@ -536,6 +536,12 @@ struct pan_kmod_ops {
+    /* Flush the pending BO map syncs. */
+    int (*flush_bo_map_syncs)(struct pan_kmod_dev *dev);
+ 
++   /* Tell the kernel a CPU-side CSF event word changed, so a CSG evicted
++    * while waiting on it gets re-evaluated. Optional: NULL on backends that
++    * share one CSG and do not need the notification. Returns 0 or -1.
++    */
++   int (*cs_event_signal)(struct pan_kmod_dev *dev);
++
+    /* Wait for a buffer object to be ready for read or read/write accesses. */
+    bool (*bo_wait)(struct pan_kmod_bo *bo, int64_t timeout_ns,
+                    bool for_read_only_access);
+@@ -857,6 +863,15 @@ void pan_kmod_queue_bo_map_sync(struct pan_kmod_bo *bo, uint64_t bo_offset,
+ 
+ void pan_kmod_flush_bo_map_syncs(struct pan_kmod_dev *dev);
+ 
++/* Notify the kernel that a CPU write to CSF event memory may have satisfied
++ * a SYNC_WAIT. Returns 0 when the backend has nothing to do or the signal
++ * was delivered, -1 when the backend reports a failure.
++ *
++ * Not inline: at -O3 a static inline sees a NULL slot on every backend the
++ * compiler can prove and deletes the call, so kbase never gets the ioctl.
++ */
++int pan_kmod_cs_event_signal(struct pan_kmod_dev *dev);
++
+ static inline void
+ pan_kmod_set_bo_label(struct pan_kmod_dev *dev, struct pan_kmod_bo *bo, const char *label)
+ {
+diff --git a/src/panfrost/vulkan/csf/panvk_event.h b/src/panfrost/vulkan/csf/panvk_event.h
+index d99eee49893..f58673d1c2c 100644
+--- a/src/panfrost/vulkan/csf/panvk_event.h
++++ b/src/panfrost/vulkan/csf/panvk_event.h
+@@ -19,7 +19,10 @@ struct panvk_event {
+ 
+    /* v10 is lacking IAND/IOR instructions, which forces us to have one syncobj
+     * per-subqueue instead of one syncobj on which subqueues would only
+-    * set/clear their bit. */
++    * set/clear their bit. On kbase this is its own CSF event memory BO: the
++    * rw_nc pool is ordinary memory, and kbase never re-checks a SYNC_WAIT
++    * whose word is not event memory once the waiting CSG has been evicted.
++    * Elsewhere it is a suballocation of the rw_nc pool. */
+    struct panvk_priv_mem syncobjs;
+ };
+ 
+diff --git a/src/panfrost/vulkan/csf/panvk_vX_cmd_draw.c b/src/panfrost/vulkan/csf/panvk_vX_cmd_draw.c
+index 293b12979ad..720ce8ab239 100644
+--- a/src/panfrost/vulkan/csf/panvk_vX_cmd_draw.c
++++ b/src/panfrost/vulkan/csf/panvk_vX_cmd_draw.c
+@@ -1096,7 +1096,8 @@ calc_render_descs_size(struct panvk_cmd_buffer *cmdbuf)
+ }
+ 
+ static void
+-cs_render_desc_ringbuf_reserve(struct cs_builder *b, uint32_t size)
++cs_render_desc_ringbuf_reserve(struct panvk_cmd_buffer *cmdbuf,
++                               struct cs_builder *b, uint32_t size)
+ {
+    /* Make sure we don't allocate more than the ringbuf size. */
+    assert(size <= RENDER_DESC_RINGBUF_SIZE);
+@@ -1115,9 +1116,11 @@ cs_render_desc_ringbuf_reserve(struct cs_builder *b, uint32_t size)
+    cs_move32_to(b, sz_reg, size - 1);
+    cs_sync32_wait(b, false, MALI_CS_CONDITION_GREATER, sz_reg, ringbuf_sync);
+ 
+-   /* Decrement the syncobj to reflect the fact we're reserving memory. */
++   /* Decrement the syncobj to reflect the fact we're reserving memory.
++    * Same subqueue as the release, but on kbase the word is CSF event
++    * memory and the signal has to be SYSTEM scope to be re-checked. */
+    cs_move32_to(b, sz_reg, -size);
+-   cs_sync32_add(b, false, MALI_CS_SYNC_SCOPE_CSG, sz_reg, ringbuf_sync,
++   cs_sync32_add(b, false, panvk_cs_signal_scope(cmdbuf), sz_reg, ringbuf_sync,
+                  cs_now());
+ }
+ 
+@@ -1296,7 +1299,7 @@ get_tiler_desc(struct panvk_cmd_buffer *cmdbuf)
+    if (simul_use) {
+       uint32_t descs_sz = calc_render_descs_size(cmdbuf);
+ 
+-      cs_render_desc_ringbuf_reserve(b, descs_sz);
++      cs_render_desc_ringbuf_reserve(cmdbuf, b, descs_sz);
+ 
+       /* Reserve ringbuf mem. */
+       cs_update_vt_ctx(b) {
+diff --git a/src/panfrost/vulkan/csf/panvk_vX_event.c b/src/panfrost/vulkan/csf/panvk_vX_event.c
+index eaba53d55e9..90da0e827a3 100644
+--- a/src/panfrost/vulkan/csf/panvk_vX_event.c
++++ b/src/panfrost/vulkan/csf/panvk_vX_event.c
+@@ -8,9 +8,68 @@
+ #include "panvk_entrypoints.h"
+ #include "panvk_event.h"
+ #include "panvk_mempool.h"
++#include "panvk_physical_device.h"
++#include "panvk_priv_bo.h"
++
++#include "kmod/pan_kmod.h"
+ 
+ #include "vk_log.h"
+ 
++static bool
++panvk_device_uses_kbase(const struct panvk_device *dev)
++{
++   return to_panvk_physical_device(dev->vk.physical)->kbase_node_path[0] !=
++          '\0';
++}
++
++#ifdef HAVE_PAN_KMOD_KBASE
++/* panvk_priv_mem_write only flushes WB_MMAP BOs. CSF event memory is not one,
++ * and kbase leaves it CPU-cached, so a host write has to be cleaned by hand
++ * or the GPU keeps seeing the stale line. */
++static void
++panvk_event_cache_op(const void *start, size_t size, bool invalidate)
++{
++#if defined(__aarch64__)
++   uintptr_t ptr = (uintptr_t)start & ~(uintptr_t)63;
++   uintptr_t end = ((uintptr_t)start + size + 63) & ~(uintptr_t)63;
++
++   for (; ptr < end; ptr += 64) {
++      if (invalidate)
++         __asm__ volatile("dc civac, %0" : : "r"(ptr) : "memory");
++      else
++         __asm__ volatile("dc cvac, %0" : : "r"(ptr) : "memory");
++   }
++   __asm__ volatile("dsb sy" ::: "memory");
++#else
++   (void)start;
++   (void)size;
++   (void)invalidate;
++   __sync_synchronize();
++#endif
++}
++#endif
++
++/* Push the CPU write out of the cache, then on kbase ask the kernel to
++ * re-evaluate CSF event waits. The signal is a no-op on other backends
++ * (cs_event_signal is NULL). Returns false only when the backend reports
++ * that the notification failed.
++ */
++static bool
++panvk_event_publish(struct panvk_device *dev, struct panvk_event *event)
++{
++#ifdef HAVE_PAN_KMOD_KBASE
++   if (panvk_device_uses_kbase(dev)) {
++      void *cpu = panvk_priv_mem_host_addr(event->syncobjs);
++
++      if (cpu)
++         panvk_event_cache_op(
++            cpu, sizeof(struct panvk_cs_sync32) * PANVK_SUBQUEUE_COUNT, false);
++   }
++#endif
++
++   return pan_kmod_cs_event_signal(dev->kmod.dev) == 0;
++}
++
+ VKAPI_ATTR VkResult VKAPI_CALL
+ panvk_per_arch(CreateEvent)(VkDevice _device,
+                             const VkEventCreateInfo *pCreateInfo,
+@@ -28,7 +87,26 @@ panvk_per_arch(CreateEvent)(VkDevice _device,
+       .alignment = 64,
+    };
+ 
+-   event->syncobjs = panvk_pool_alloc_mem(&device->mempools.rw_nc, info);
++#ifdef HAVE_PAN_KMOD_KBASE
++   if (panvk_device_uses_kbase(device)) {
++      struct panvk_priv_bo *sync_bo;
++      VkResult result = panvk_priv_bo_create(
++         device, info.size, PAN_KMOD_BO_FLAG_CSF_EVENT,
++         VK_SYSTEM_ALLOCATION_SCOPE_OBJECT, &sync_bo);
++      if (result != VK_SUCCESS) {
++         vk_object_free(&device->vk, pAllocator, event);
++         return result;
++      }
++
++      event->syncobjs = (struct panvk_priv_mem){
++         .bo = (uintptr_t)sync_bo,
++         .offset = 0,
++      };
++   } else
++#endif
++   {
++      event->syncobjs = panvk_pool_alloc_mem(&device->mempools.rw_nc, info);
++   }
+    if (!panvk_priv_mem_check_alloc(event->syncobjs)) {
+       vk_object_free(&device->vk, pAllocator, event);
+       return panvk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+@@ -38,6 +116,9 @@ panvk_per_arch(CreateEvent)(VkDevice _device,
+                               PANVK_SUBQUEUE_COUNT, sobjs) {
+       memset(sobjs, 0, sizeof(struct panvk_cs_sync32) * PANVK_SUBQUEUE_COUNT);
+    }
++   /* Reset state. A failed signal here still leaves a valid event; the next
++    * SetEvent reports it. */
++   (void)panvk_event_publish(device, event);
+ 
+    *pEvent = panvk_event_to_handle(event);
+    return VK_SUCCESS;
+@@ -61,8 +142,30 @@ panvk_per_arch(DestroyEvent)(VkDevice _device, VkEvent _event,
+ VKAPI_ATTR VkResult VKAPI_CALL
+ panvk_per_arch(GetEventStatus)(VkDevice _device, VkEvent _event)
+ {
++   VK_FROM_HANDLE(panvk_device, device, _device);
+    VK_FROM_HANDLE(panvk_event, event, _event);
+ 
++#ifdef HAVE_PAN_KMOD_KBASE
++   /* CSF event memory is not WB_MMAP, so the readback macro would neither
++    * invalidate nor see a fresh GPU write. Drop the lines first. */
++   if (panvk_device_uses_kbase(device)) {
++      const struct panvk_cs_sync32 *syncobjs =
++         panvk_priv_mem_host_addr(event->syncobjs);
++      if (!syncobjs)
++         return VK_EVENT_RESET;
++
++      panvk_event_cache_op(syncobjs,
++                           sizeof(*syncobjs) * PANVK_SUBQUEUE_COUNT, true);
++      for (uint32_t i = 0; i < PANVK_SUBQUEUE_COUNT; i++) {
++         if (!syncobjs[i].seqno)
++            return VK_EVENT_RESET;
++      }
++      return VK_EVENT_SET;
++   }
++#else
++   (void)device;
++#endif
++
+    panvk_priv_mem_readback_array(event->syncobjs, 0, struct panvk_cs_sync32,
+                                  PANVK_SUBQUEUE_COUNT, syncobjs) {
+       for (uint32_t i = 0; i < PANVK_SUBQUEUE_COUNT; i++) {
+@@ -77,6 +180,7 @@ panvk_per_arch(GetEventStatus)(VkDevice _device, VkEvent _event)
+ VKAPI_ATTR VkResult VKAPI_CALL
+ panvk_per_arch(SetEvent)(VkDevice _device, VkEvent _event)
+ {
++   VK_FROM_HANDLE(panvk_device, device, _device);
+    VK_FROM_HANDLE(panvk_event, event, _event);
+ 
+    panvk_priv_mem_write_array(event->syncobjs, 0, struct panvk_cs_sync32,
+@@ -84,6 +188,8 @@ panvk_per_arch(SetEvent)(VkDevice _device, VkEvent _event)
+       for (uint32_t i = 0; i < PANVK_SUBQUEUE_COUNT; i++)
+          syncobjs[i].seqno = 1;
+    }
++   if (!panvk_event_publish(device, event))
++      return panvk_error(device, VK_ERROR_DEVICE_LOST);
+ 
+    return VK_SUCCESS;
+ }
+@@ -91,12 +197,15 @@ panvk_per_arch(SetEvent)(VkDevice _device, VkEvent _event)
+ VKAPI_ATTR VkResult VKAPI_CALL
+ panvk_per_arch(ResetEvent)(VkDevice _device, VkEvent _event)
+ {
++   VK_FROM_HANDLE(panvk_device, device, _device);
+    VK_FROM_HANDLE(panvk_event, event, _event);
+ 
+    panvk_priv_mem_write_array(event->syncobjs, 0, struct panvk_cs_sync32,
+                               PANVK_SUBQUEUE_COUNT, syncobjs) {
+       memset(syncobjs, 0, sizeof(*syncobjs) * PANVK_SUBQUEUE_COUNT);
+    }
++   if (!panvk_event_publish(device, event))
++      return panvk_error(device, VK_ERROR_DEVICE_LOST);
+ 
+    return VK_SUCCESS;
+ }
+diff --git a/src/panfrost/vulkan/csf/panvk_vX_gpu_queue.c b/src/panfrost/vulkan/csf/panvk_vX_gpu_queue.c
+index 19845889fcc..764bccaeb26 100644
+--- a/src/panfrost/vulkan/csf/panvk_vX_gpu_queue.c
++++ b/src/panfrost/vulkan/csf/panvk_vX_gpu_queue.c
+@@ -1314,7 +1314,28 @@ ringbuf_mapped:
+       .alignment = 64,
+    };
+ 
+-   ringbuf->syncobj = panvk_pool_alloc_mem(&dev->mempools.rw, alloc_info);
++#ifdef HAVE_PAN_KMOD_KBASE
++   /* CSF event memory, like queue->syncobjs: kbase never re-checks a
++    * SYNC_WAIT on ordinary memory once the waiting CSG has been evicted.
++    * panvk_pool_free_mem() in finish_render_desc_ringbuf() unrefs this BO. */
++   if (gpu_queue_uses_kbase(dev)) {
++      struct panvk_priv_bo *sync_bo;
++      VkResult result = panvk_priv_bo_create(dev, alloc_info.size,
++                                             PAN_KMOD_BO_FLAG_CSF_EVENT,
++                                             VK_SYSTEM_ALLOCATION_SCOPE_DEVICE,
++                                             &sync_bo);
++      if (result != VK_SUCCESS)
++         return result;
++
++      ringbuf->syncobj = (struct panvk_priv_mem){
++         .bo = (uintptr_t)sync_bo,
++         .offset = 0,
++      };
++   } else
++#endif
++   {
++      ringbuf->syncobj = panvk_pool_alloc_mem(&dev->mempools.rw, alloc_info);
++   }
+    if (!panvk_priv_mem_check_alloc(ringbuf->syncobj))
+       return panvk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY,
+                           "Failed to create the render desc ringbuf context");

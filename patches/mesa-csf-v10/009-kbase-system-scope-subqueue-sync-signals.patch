@@ -1,0 +1,82 @@
+From: onn field port (Walmart onn 4K Pro Gen 2, Mali-G310v2 MC1, kbase r44p1 CSF UK 1.20)
+Subject: [PATCH csf-v10 009] panvk/csf: use SYSTEM scope for cross-subqueue sync signals on kbase
+
+Adaptation of csf-v11/077. kbase only wakes a CS blocked in SYNC_WAIT on a 
+sibling subqueue (or re-evaluates the wait of an evicted CSG) when the signal 
+is SYSTEM scope. Adds panvk_cs_signal_scope() and promotes the CSG scope in 
+panvk_instr_sync{32,64}_add on kbase, which covers every per-subqueue syncobj 
+progress signal (barriers, draw/dispatch/fragment completion). Explicit 
+sites: the fragment-side render desc ring release and CmdSetEvent2. The 
+gpu_prerast hunks of 077 are dropped (no gpu_prerast on v10). Left CSG, as in 
+077: the KBASE_DIAG progress marker, query availability writes (host polled), 
+CmdResetEvent2 (nobody waits for 0). The desc ring reserve signal moves with 
+csf-v10/010, as it does in csf-v11/085.
+
+diff --git a/src/panfrost/vulkan/csf/panvk_instr.h b/src/panfrost/vulkan/csf/panvk_instr.h
+index 788fcdad508..34d20705bb5 100644
+--- a/src/panfrost/vulkan/csf/panvk_instr.h
++++ b/src/panfrost/vulkan/csf/panvk_instr.h
+@@ -4,6 +4,7 @@
+  */
+ 
+ #include "panvk_cmd_buffer.h"
++#include "panvk_physical_device.h"
+ #include "panvk_queue.h"
+ 
+ enum panvk_instr_work_type {
+@@ -90,6 +91,16 @@ void panvk_per_arch(panvk_instr_end_work_async)(
+    const struct panvk_instr_end_args *const args,
+    struct cs_async_op ts_async_op);
+ 
++static inline enum mali_cs_sync_scope
++panvk_cs_signal_scope(const struct panvk_cmd_buffer *cmdbuf)
++{
++   if (to_panvk_physical_device(cmdbuf->vk.base.device->physical)
++          ->kbase_node_path[0])
++      return MALI_CS_SYNC_SCOPE_SYSTEM;
++
++   return MALI_CS_SYNC_SCOPE_CSG;
++}
++
+ #define PANVK_INSTR_SYNC_OPS(__cnt_width)                                      \
+    static inline void panvk_instr_sync##__cnt_width##_add(                     \
+       struct panvk_cmd_buffer *cmdbuf, enum panvk_subqueue_id id,              \
+@@ -99,6 +110,8 @@ void panvk_per_arch(panvk_instr_end_work_async)(
+       struct cs_builder *b = panvk_get_cs_builder(cmdbuf, id);                 \
+       panvk_per_arch(panvk_instr_begin_work)(                                  \
+          id, cmdbuf, PANVK_INSTR_WORK_TYPE_SYNC##__cnt_width##_ADD);           \
++      if (scope == MALI_CS_SYNC_SCOPE_CSG)                                     \
++         scope = panvk_cs_signal_scope(cmdbuf);                                \
+       cs_sync##__cnt_width##_add(b, propagate_error, scope, val, addr, async); \
+       struct panvk_instr_end_args instr_info = {                               \
+          .sync = {.addr_regs = addr, .val_regs = val},                         \
+diff --git a/src/panfrost/vulkan/csf/panvk_vX_cmd_draw.c b/src/panfrost/vulkan/csf/panvk_vX_cmd_draw.c
+index 46a917b013f..293b12979ad 100644
+--- a/src/panfrost/vulkan/csf/panvk_vX_cmd_draw.c
++++ b/src/panfrost/vulkan/csf/panvk_vX_cmd_draw.c
+@@ -4672,7 +4672,7 @@ issue_fragment_jobs(struct panvk_cmd_buffer *cmdbuf)
+ #endif
+ 
+       if (free_render_descs) {
+-         cs_sync32_add(b, true, MALI_CS_SYNC_SCOPE_CSG, release_sz,
++         cs_sync32_add(b, true, panvk_cs_signal_scope(cmdbuf), release_sz,
+                        ringbuf_sync_addr, async);
+       }
+ 
+diff --git a/src/panfrost/vulkan/csf/panvk_vX_cmd_event.c b/src/panfrost/vulkan/csf/panvk_vX_cmd_event.c
+index 45c8fd3fe24..511be875e56 100644
+--- a/src/panfrost/vulkan/csf/panvk_vX_cmd_event.c
++++ b/src/panfrost/vulkan/csf/panvk_vX_cmd_event.c
+@@ -156,9 +156,9 @@ panvk_per_arch(CmdSetEvent2)(VkCommandBuffer commandBuffer, VkEvent _event,
+             }
+ 
+             cs_move32_to(b, seqno, 1);
+-            cs_sync32_set(b, false, MALI_CS_SYNC_SCOPE_CSG, seqno, sync_addr,
+-                          cs_defer(sb_mask | SB_MASK(DEFERRED_FLUSH),
+-                                   SB_ID(DEFERRED_SYNC)));
++            cs_sync32_set(b, false, panvk_cs_signal_scope(cmdbuf), seqno,
++                          sync_addr, cs_defer(sb_mask | SB_MASK(DEFERRED_FLUSH),
++                                              SB_ID(DEFERRED_SYNC)));
+          }
+       }
+    }
