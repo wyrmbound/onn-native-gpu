@@ -62,8 +62,9 @@ always goes to the Android home and ends the session.
   it; see Finding 6 in `docs/UPSTREAM_REPORT.md` before spending any time on it. 2D titles are unaffected. A 65 W supply
   in place of the stock 10 W one does not help. Capping the GPU clock (devfreq max_freq, reachable through the vendor SystemControl HIDL
   service) does not help either, and DDR frequency is fixed at 1584 MHz; the deaths are not thermal (<= 52 C). Slow
-  wide memory walks and holding memory under the game changed nothing, and our unit also rebooted twice while idle;
-  it was returned as probably defective. If a user's box does this, suggest testing a second unit before any debugging.
+  wide memory walks and holding memory under the game changed nothing, and our unit also rebooted twice while idle.
+  The replacement unit ran the same memcpy loop and Mario for 16+ minutes each with no reboot: it was a defective
+  box. If a user's box does this, have them run `tools/memhog` for 10 minutes; if it reboots, the unit is bad.
 - **A Vulkan-native APK title fails at window or surface creation**: it needs `SDL_VULKAN_LIBRARY` pointing at
   `vkshim/libvulkan.so` (`apkrun/run_apk.sh` sets it), and adb launches of the display activity must pass
   `--ez launch false --ez fresh true` like the home tile, or the old session takes the buffer offer.

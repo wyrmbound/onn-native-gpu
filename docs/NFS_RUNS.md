@@ -193,3 +193,7 @@ Reading:
 - Part B: B0 (no shield) survived 15 min, while B1 and B2 died at 6.8 and 13.8 min. One sample each; B0's survival sits outside today's 6-7.6 min Mario band, so variance alone could explain it. No clear location effect: lifetimes did not swing with shield size in a consistent direction.
 - The idle reboot about a minute after a fresh boot, with nothing of ours running, matches the brief's stop rule and ended the series. It is the first idle death recorded. Boot itself is a heavy DDR period (dex2oat, package scans, Play services), which fits "odds rise with load" as much as anything here.
 - memtest was left running nowhere: the last two runs ended in reboots, and the idle check showed no memtest or kald process.
+
+## Replacement unit (2026-11-08 evening)
+
+Same firmware, same pb runtime and driver 0ac69e67. memhog 3 threads: survived 960 s at 8.43-8.48 GB/s (the old unit died at 50-340 s every time). Mario through ZeroCopyActivity: survived 16+ minutes, played by hand for part of it, still running when the watch ended. The old unit was defective; the watchdog deaths were never the driver, the runtime or the games.

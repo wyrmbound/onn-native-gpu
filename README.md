@@ -79,20 +79,19 @@ See `docs/UPSTREAM_REPORT.md` for evidence. In short:
 6. Three HIGH priority CSGs per VkQueue competing with the system's groups (display on) wedge the GPU during
    firmware group rotation, and the vendor kernel's GPU reset then hard-locks the box (watchdog reboot, no log).
    Patch 013 (one CSG with three CSIs per VkQueue) fixes it for 2D titles (27 min and counting).
-7. **Sustained 3D titles still watchdog-reboot this box after 1 to 7 minutes, and it is not the driver.** A CPU-only
-   memcpy loop at about 8.7 GB/s, with no GPU work at all, reboots it the same way with an empty last_kmsg, panel on
-   or off, on the stock 10 W supply or a 65 W one. It is a random SoC lockup whose odds rise with DDR traffic.
-   1080p output stretched one game to 7.5 minutes; nothing in userspace prevents it. Capping the GPU clock, a 65 W
-   supply, a slow 1 GB memory walk and holding memory under the game changed nothing, and the unit also rebooted
-   twice while idle with nothing of ours running, so our one unit is probably marginal hardware; it went back under
-   warranty on 2026-11-08. See Finding 6 and `docs/NFS_RUNS.md`.
+7. **Our first unit watchdog-rebooted 1 to 7 minutes into any sustained 3D title, and it was the unit, not the
+   driver.** A CPU-only memcpy loop at about 8.7 GB/s, with no GPU work at all, rebooted it the same way with an
+   empty last_kmsg; capping the GPU clock, a 65 W supply, slow memory walks and memory shields changed nothing, and
+   it also rebooted twice while idle. The replacement unit, same firmware and same binaries, ran the memcpy loop for
+   16 minutes and Mario for 16+ minutes without a hiccup. If your box dies like this, test a second unit before you
+   debug anything. See Finding 6 and `docs/NFS_RUNS.md`.
 
 ## Status
 
 Validated on one unit: a full runner pass with every stage green and sm64ex playable with the pad. The bootloader is
 vendor-locked (`docs/BOOTLOADER_CHECK.md`), so this route is the route. A Vulkan-native SDL3 title (a 64-bit
-Android game APK) renders through `vkshim` + `apkrun` at about 49 fps. 2D titles run indefinitely; sustained 3D
-titles are limited by the platform lockup above.
+Android game APK) renders through `vkshim` + `apkrun` at about 49 fps. 2D and 3D titles run indefinitely on a healthy
+unit; the lockup above was one defective box.
 
 ## License
 
