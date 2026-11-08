@@ -125,7 +125,7 @@ What this means for games on this box:
   USB-C in place of the stock 10 W): memhog alone still died at about 4:50 (row P1), so power delivery is ruled out.
 - Hypothesis still open, unproven: launching heavy work right after boot dies sooner (weak clustering in the table).
 
-**Replacement unit, 2026-11-09 (same firmware and binaries).** Same harness, panel on, attract loop, `SDL_AUDIODRIVER=dummy`, 20 min each:
+**Replacement unit, 2026-11-09 (same firmware and binaries).** Same harness, panel on, attract loop, `SDL_AUDIODRIVER=dummy` (no effect: apkrun forces SDL's disk audio), 20 min each:
 
 | Run | Driver | Outcome |
 |---|---|---|
