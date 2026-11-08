@@ -49,7 +49,7 @@ game, ROM, game assets or Google system files.
 `onnshell/` is [OnnShell](https://github.com/wyrmbound/onnshell), the launcher app whose zero-copy display shows the
 game. It also has a game Store (search, and the exact game version each port needs), a home Games row that
 follows whatever is in `/data/local/tmp/games`, an in-game performance overlay (fps, temperature, memory), and a corner window: hold Share in a game and it keeps
-playing in a 16:9 window over Netflix or any app (three sizes, any corner), with the controller still driving the game.
+playing in a 16:9 window over Netflix or any app (three sizes, any corner, or dragged anywhere with the DS4 touchpad), with the controller still driving the game.
 
 ## What is here
 
