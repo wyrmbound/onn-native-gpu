@@ -62,6 +62,12 @@ always goes to the Android home and ends the session.
   collapses free memory and the box can hang. Patch 013
   (one CSG per VkQueue) is withdrawn: it survived no Tyrian run (0/3) while 001-012 survived 4/5. Do not re-add it.
   See Finding 7 in `docs/UPSTREAM_REPORT.md`.
+- **A game freezes with one core at 100% and no fault in its log**: find out whose code is spinning before blaming
+  the driver. The box's own `simpleperf` samples a 64-bit runner game as the shell user with no setting changed:
+  `simpleperf record -p $(pidof linker64) --duration 3 -e cpu-clock -o /data/local/tmp/perf.data`, then
+  `simpleperf report -i /data/local/tmp/perf.data --sort dso,symbol`. Super Metroid freezes about two seconds in on
+  roughly one start in seven; the samples are all in the port's own `RunCpuUntilPC` (its built-in SNES fallback),
+  none in Mesa or SDL. Cause in the port not found; starting it again works.
 - **The box watchdog-reboots 1-7 minutes into a sustained 3D game** is the platform, not the driver:
   a CPU-only memcpy loop at ~8.7 GB/s reboots this box the same way, with an empty last_kmsg. Nothing in Mesa fixes
   it; see Finding 6 in `docs/UPSTREAM_REPORT.md` before spending any time on it. 2D titles are unaffected. A 65 W supply

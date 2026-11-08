@@ -39,8 +39,9 @@ the box, a Linux or WSL build host, an Android 14 arm64 GSI, Shizuku, a gamepad 
 
 ## Skip the long builds: prebuilt binaries
 
-The [prebuilt release](../../releases) has every arm64 binary we built ourselves (PanVK ICD with patches 001-012,
-Mesa EGL/GLESv2/zink, patched SDL2 and SDL3, `vkshim/libvulkan.so`, `apkrun`, the m1-m8 tests, the diagnosis tools
+The [prebuilt release](../../releases) has every arm64 binary we built ourselves (PanVK ICD with patches 001-012 and 014,
+Mesa EGL/GLESv2/zink, patched SDL2 and SDL3, `vkshim/libvulkan.so`, `apkrun` with `libonnandroid.so` and
+`libonngrab.so`, the m1-m8 tests, the diagnosis tools
 and the launch scripts), with SHA256 sums. Unpack it into `$WORK/pb` and skip stages 3 and 4 (`30-mesa.sh`,
 `40-sdl.sh`). You still run 1 and 2 (the toolchain is needed for the NEEDED check, and the 64-bit runtime comes from
 your own GSI, which we do not redistribute), 5 for your own Mario build, and 6 and 7 as usual. The release holds no
