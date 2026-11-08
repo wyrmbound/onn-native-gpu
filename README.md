@@ -83,7 +83,7 @@ See `docs/UPSTREAM_REPORT.md` for evidence. In short:
    firmware group rotation, and the vendor kernel's GPU reset then hard-locks the box (watchdog reboot, no log).
    Patch 013 (one CSG with three CSIs per VkQueue) seemed to fix it for 2D titles (27 min and counting) on the
    first, defective unit. On the replacement unit Tyrian (SDL3 + GL via zink) hit an intermittent CSF exception 0x88
-   (GPU_SHAREABILITY_FAULT): 013 survived 0 of 3 Tyrian runs, 001-012 survived 3 of 4. So **013 is withdrawn**
+   (GPU_SHAREABILITY_FAULT): 013 survived 0 of 3 Tyrian runs, 001-012 survived 4 of 5. So **013 is withdrawn**
    (`patches/withdrawn/`). 013 is not shown to cause the fault; 001-012 is the safer default. The fault itself is
    open: see Finding 7.
 7. **Our first unit watchdog-rebooted 1 to 7 minutes into any sustained 3D title, and it was the unit, not the

@@ -169,7 +169,7 @@ Why this still belongs in the report: Finding 5's table and claim were built whi
 
 **What the client sees.** `kbase: CSF group 0 fatal error: status 0x00c00488 (exception 0x88)`, then `CSF queue-group error (error_type 1) while waiting on subqueue N job M`, then `zink: DEVICE LOST!` (patch 012 latches the group error). 0x88 is GPU_SHAREABILITY_FAULT in the Mali CSF exception list (named from the Linux panthor enum; the vendor kbase headers were not available to us). If the game process keeps running after DEVICE LOST, free memory drops by more than 1 GB within 30 s and stays there; once the box hung until it was power-cycled (system_server watchdog, no kernel record). Killing the process when DEVICE LOST appears avoids that.
 
-**Runs (2026-11-09, one unit, Tyrian, 20 minutes each; "cold" = fresh boot, 15 minutes idle and under 50 C first; box display on and TV off in every run).**
+**Runs (2026-11-09, one unit, Tyrian, 20 minutes each; "cold" = fresh boot, 15 minutes idle and under 50 C first; box display on and the TV off unless noted).**
 
 | Run | Driver | Tyrian result |
 |---|---|---|
@@ -180,11 +180,11 @@ Why this still belongs in the report: Finding 5's table and claim were built whi
 | K12T | 001-012 (93079e2d, clean kit build), cold | 0x88 at about 15 s |
 | V10T | 001-012 (730608c3), cold | survived, 34,440 frames |
 | K12TV | 001-012 (93079e2d), cold | survived, 34,380 frames (the TV was switched on for the last 14 minutes) |
-| pending | 001-012 (93079e2d), cold, TV on from the start | not run yet |
+| K12TVon | 001-012 (93079e2d), cold, TV on from the start | survived, 33,540 frames (game audio sent to /dev/null instead of the speaker) |
 
 Same driver 93079e2d, other titles: Mario 20 min clean (36,120 frames), NFS 20 min clean. 001-013 on NFS: 20 min clean.
 
-**Reading.** 013 survived 0 of 3 Tyrian runs and 001-012 survived 3 of 4, so 013 is withdrawn as the safer default, not because it is shown to cause the fault. The fault reproduces without 013. Tyrian's reinstalled game data matched the earlier copy by name and size. Temperatures stayed under 56 C (live HAL reading).
+**Reading.** 013 survived 0 of 3 Tyrian runs and 001-012 survived 4 of 5, so 013 is withdrawn as the safer default, not because it is shown to cause the fault. The fault reproduces without 013. Tyrian's reinstalled game data matched the earlier copy by name and size. Temperatures stayed under 56 C (live HAL reading). Both TV-on runs survived; with one fault in five 001-012 runs, that neither ties the fault to the TV being off nor rules it out.
 
 **Reproducibility note.** The 001-013 binary in the first prebuilt release (sha256 0ac69e67...) is not byte-reproducible from this kit's source: a clean rebuild of the same 001-013 source gives 3c4b8ff3..., so that binary came from an older build-directory state. The current release is a clean build of 001-012 (93079e2d...).
 
