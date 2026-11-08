@@ -124,6 +124,8 @@ keepalive is a plain Vulkan client on the same library, so before 013 its VkQueu
 
 **HIGH priority does not help here.** The groups are created at `BASE_QUEUE_GROUP_PRIORITY_HIGH` with the comment "resist CSG rotation so the Pixel kbase off-slot heap-reclaim shrinker cannot empty our tiler heaps under memory pressure" (`kbase_kmod.c`). That is a workaround for the Pixel heap shrinker. On this kbase every failing run already had all three groups at HIGH; it did not prevent the rotation hang. A MEDIUM priority variant is staged (`csf-v10-staged/013v2`) but has not been run.
 
+**Re-validation on the replacement unit (2026-11-09).** NFS Most Wanted (Vulkan direct, the first unit's fastest killer at 54-455 s on any driver), display on, attract loop, audio off, 20 minutes per driver. 001-013 survived (59,160 frames). 001-012, three CSGs per queue with cross-CSG waits, also survived (58,260 frames). Neither run rebooted, and soc_thermal peaked at 63 C. On a healthy unit the pre-013 driver does not reproduce the hang, so the E1/E3/F1 deaths above most likely came from the defective unit rather than from cross-CSG waits. **Status: unproven.** 013 is kept because it uses one CSG slot per queue instead of three and has no cross-group waits, but it is not presented as a demonstrated fix. Not rerun: the original Tyrian (GL via zink) workload; n = 1 per driver.
+
 ## Finding 6 (not a driver issue): sustained 3D titles hard-lock the SoC on 001-013, and so does a CPU memcpy loop
 
 **Status: RESOLVED as a platform fault, not PanVK/kbase. Nothing to fix in the driver; documented so nobody chases it again.**

@@ -81,7 +81,9 @@ See `docs/UPSTREAM_REPORT.md` for evidence. In short:
 5. The DualShock 4 on the newer kernel `hid-playstation` driver needs an explicit SDL mapping on SDL 2.30.
 6. Three HIGH priority CSGs per VkQueue competing with the system's groups (display on) wedge the GPU during
    firmware group rotation, and the vendor kernel's GPU reset then hard-locks the box (watchdog reboot, no log).
-   Patch 013 (one CSG with three CSIs per VkQueue) fixes it for 2D titles (27 min and counting).
+   Patch 013 (one CSG with three CSIs per VkQueue) seemed to fix it for 2D titles (27 min and counting), but on
+   the replacement unit (item 7) the pre-013 driver also ran NFS for 20 min, so this hang most likely came from the
+   defective unit too. 013 stays as the leaner layout; see Finding 5.
 7. **Our first unit watchdog-rebooted 1 to 7 minutes into any sustained 3D title, and it was the unit, not the
    driver.** A CPU-only memcpy loop at about 8.7 GB/s, with no GPU work at all, rebooted it the same way with an
    empty last_kmsg; capping the GPU clock, a 65 W supply, slow memory walks and memory shields changed nothing, and

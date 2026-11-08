@@ -56,7 +56,8 @@ always goes to the Android home and ends the session.
 - **A GPU hang with no fault after a few seconds of a real game** means the tiler-heap renewal patch (001) is
   missing.
 - **The box watchdog-reboots a few minutes into a 2D game with the display on** (no kernel log, no DEVICE LOST)
-  means patch 013 (one CSG per VkQueue) is missing.
+  was read as "patch 013 (one CSG per VkQueue) is missing" on the first, defective unit. On the replacement unit the
+  pre-013 driver ran NFS for 20 min without a reboot, so run the CPU memcpy loop on your unit first (Finding 5).
 - **The box watchdog-reboots 1-7 minutes into a sustained 3D game even with 013** is the platform, not the driver:
   a CPU-only memcpy loop at ~8.7 GB/s reboots this box the same way, with an empty last_kmsg. Nothing in Mesa fixes
   it; see Finding 6 in `docs/UPSTREAM_REPORT.md` before spending any time on it. 2D titles are unaffected. A 65 W supply

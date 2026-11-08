@@ -125,6 +125,19 @@ What this means for games on this box:
   USB-C in place of the stock 10 W): memhog alone still died at about 4:50 (row P1), so power delivery is ruled out.
 - Hypothesis still open, unproven: launching heavy work right after boot dies sooner (weak clustering in the table).
 
+**Replacement unit, 2026-11-09 (same firmware and binaries).** Same harness, panel on, attract loop, `SDL_AUDIODRIVER=dummy`, 20 min each:
+
+| Run | Driver | Outcome |
+|---|---|---|
+| N013 | 001-013 (0ac69e67) | survived 1200 s, 59,160 frames, max 63 C |
+| Npre | 001-012 (730608c3, three CSGs per queue) | survived 1200 s, 58,260 frames, max 63 C |
+
+The lockup above was the unit. NFS on this unit runs at about 50 fps for as long as tested on either driver.
+
+On-screen touch controls: the port draws them only while SDL reports no gamepad, or for about 8 s after a screen touch
+(`touch::Shown`). With the DS4 mapped they never appear on the TV, and no setting is needed. The in-game TOUCH CONTROLS menu
+has opacity, size, steering and stick mode for phones.
+
 Driver work that stands regardless: 013 (one CSG per queue) and the NFS launch fixes (apkrun SDL_Init/SDL_GetPointerProperty
 shims, SDL_VULKAN_LIBRARY, tile launch flags). Finding 5's before/after should be re-validated on a board without this
 lockup before it is presented upstream as proven.
