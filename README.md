@@ -10,7 +10,7 @@ The box ships a 32-bit-only Android userspace and no Vulkan loader. This repo is
 game (arm64, SDL2 + GLES2)
   -> SDL2 offscreen video, EGL surfaceless         patches/sdl
   -> Mesa zink (GL on Vulkan), loads the ICD directly   patches/mesa-csf-v10 005-008
-  -> Mesa PanVK on mali_kbase (panvk-kbase-android, g610-v10-csf + fixes 001-004, 009-013)
+  -> Mesa PanVK on mali_kbase (panvk-kbase-android, g610-v10-csf + fixes 001-004, 009-012)
   -> dma-buf frames handed to an Android app's HardwareBuffers (zero copy)  present/, app/
   -> app draws them on screen and plays the game's PCM audio
 ```
@@ -39,7 +39,7 @@ the box, a Linux or WSL build host, an Android 14 arm64 GSI, Shizuku, a gamepad 
 
 ## Skip the long builds: prebuilt binaries
 
-The [prebuilt release](../../releases) has every arm64 binary we built ourselves (PanVK ICD with patches 001-013,
+The [prebuilt release](../../releases) has every arm64 binary we built ourselves (PanVK ICD with patches 001-012,
 Mesa EGL/GLESv2/zink, patched SDL2 and SDL3, `vkshim/libvulkan.so`, `apkrun`, the m1-m8 tests, the diagnosis tools
 and the launch scripts), with SHA256 sums. Unpack it into `$WORK/pb` and skip stages 3 and 4 (`30-mesa.sh`,
 `40-sdl.sh`). You still run 1 and 2 (the toolchain is needed for the NEEDED check, and the 64-bit runtime comes from
@@ -55,7 +55,7 @@ playing in a 16:9 window over Netflix or any app (three sizes, any corner, or dr
 
 | Path | What |
 |---|---|
-| `patches/mesa-csf-v10/` | Patch series on top of [zenithblue-oss/panvk-kbase-android](https://github.com/zenithblue-oss/panvk-kbase-android) profile `g610-v10-csf`. 001, 002, 004 are driver fixes (offered upstream); 003 is carried but unexercised; 005-008 are only for this runtime (zink without a Vulkan loader, kopper on Android, surfaceless zink, Mesa logs to stderr); 009-011 are csf-v11 077/085/098 adapted for v10 (cross-subqueue sync scope, syncs in CSF event memory, heap ops); 012 fails a wait fast on a CSF group error; 013 uses one kbase CSG with three CSIs per VkQueue, kept as the leaner layout (its hang fix is unproven; see item 6 below). |
+| `patches/mesa-csf-v10/` | Patch series on top of [zenithblue-oss/panvk-kbase-android](https://github.com/zenithblue-oss/panvk-kbase-android) profile `g610-v10-csf`. 001, 002, 004 are driver fixes (offered upstream); 003 is carried but unexercised; 005-008 are only for this runtime (zink without a Vulkan loader, kopper on Android, surfaceless zink, Mesa logs to stderr); 009-011 are csf-v11 077/085/098 adapted for v10 (cross-subqueue sync scope, syncs in CSF event memory, heap ops); 012 fails a wait fast on a CSF group error. 013 (one kbase CSG with three CSIs per VkQueue) is withdrawn and kept only in `patches/withdrawn/` (see item 6 below). |
 | `patches/sdl/` | SDL 2.30.11: offscreen driver on EGL surfaceless, plus the present module that renders into the app's dma-bufs (with a depth buffer). |
 | `patches/sm64ex/` | sm64ex port for arm64 bionic + GLES2, build recipe (`BUILD.md`) and the launch script. **Bring your own ROM**; nothing here contains game data. |
 | `present/sdl_onnm4_present.c` | The present module source (also inside the SDL patch). |
@@ -81,22 +81,26 @@ See `docs/UPSTREAM_REPORT.md` for evidence. In short:
 5. The DualShock 4 on the newer kernel `hid-playstation` driver needs an explicit SDL mapping on SDL 2.30.
 6. Three HIGH priority CSGs per VkQueue competing with the system's groups (display on) wedge the GPU during
    firmware group rotation, and the vendor kernel's GPU reset then hard-locks the box (watchdog reboot, no log).
-   Patch 013 (one CSG with three CSIs per VkQueue) seemed to fix it for 2D titles (27 min and counting), but on
-   the replacement unit (item 7) the pre-013 driver also ran NFS and Tyrian for 20 min each, while 013 lost the GPU
-   once under Tyrian (CSF fatal error). The cause is open. 013 stays as the leaner layout; see Finding 5.
+   Patch 013 (one CSG with three CSIs per VkQueue) seemed to fix it for 2D titles (27 min and counting) on the
+   first, defective unit. On the replacement unit Tyrian (SDL3 + GL via zink) hit an intermittent CSF exception 0x88
+   (GPU_SHAREABILITY_FAULT): 013 survived 0 of 3 Tyrian runs, 001-012 survived 3 of 4. So **013 is withdrawn**
+   (`patches/withdrawn/`). 013 is not shown to cause the fault; 001-012 is the safer default. The fault itself is
+   open: see Finding 7.
 7. **Our first unit watchdog-rebooted 1 to 7 minutes into any sustained 3D title, and it was the unit, not the
    driver.** A CPU-only memcpy loop at about 8.7 GB/s, with no GPU work at all, rebooted it the same way with an
    empty last_kmsg; capping the GPU clock, a 65 W supply, slow memory walks and memory shields changed nothing, and
    it also rebooted twice while idle. The replacement unit, same firmware and same binaries, ran the memcpy loop for
    16 minutes and Mario for 16+ minutes without a hiccup. If your box dies like this, test a second unit before you
-   debug anything. See Finding 6 and `docs/NFS_RUNS.md`.
+   debug anything. See Finding 6 and `docs/NFS_RUNS.md`. (This explains the memcpy-style reboots only, not the
+   GPU fault in item 6.)
 
 ## Status
 
 Validated on one unit: a full runner pass with every stage green and sm64ex playable with the pad. The bootloader is
 vendor-locked (`docs/BOOTLOADER_CHECK.md`), so this route is the route. A Vulkan-native SDL3 title (a 64-bit
 Android game APK) renders through `vkshim` + `apkrun` at about 49 fps. 2D and 3D titles run indefinitely on a healthy
-unit; the lockup above was one defective box.
+unit; the lockup above was one defective box. One open GPU fault remains: Tyrian (SDL3 + GL via zink) sometimes loses
+the GPU within its first minutes (Finding 7); Mario and NFS ran 20 min clean on the shipped 001-012 driver.
 
 ## License
 

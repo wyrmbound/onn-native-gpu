@@ -97,6 +97,8 @@ Related: the v10 profile also misses `csf-v11/038-crc-init-kmod-munmap.patch`, w
 
 ## Finding 5: cross-CSG waits between PanVK's per-subqueue groups wedge the GPU during CSG rotation, and the vendor GPU reset hard-locks the SoC
 
+**Status (2026-11-09): 013 withdrawn, see Finding 7.** The fix below did not hold up on a healthy unit and is no longer applied; the text stays as the record of what was tried.
+
 **Symptom.** Every 64-bit game on this box watchdog-reboots the whole SoC after a few minutes. The hardware watchdog fires (boot reason `watchdog`), there is no kernel log (pstore, devfreq and kbase sysfs are root-only, dropbox has no last kmsg), and userspace sees no `VK_ERROR_DEVICE_LOST`: the kernel dies first. Process RSS, threads and maps stay flat up to the end, so it is not a leak.
 
 **Environment.** kbase r44p1, CSF UK 1.20, Amlogic S905X5M, Mali-G310 (arch 10). PanVK creates one kbase CSG per subqueue: 3 groups (VT, FRAG, COMPUTE), each with one CSI, per VkQueue, all at `BASE_QUEUE_GROUP_PRIORITY_HIGH`. The system has its own groups on the same GPU from the stock 32-bit Mali client (SurfaceFlinger, HWUI), which are active while the display is on.
@@ -161,6 +163,31 @@ Why this still belongs in the report: Finding 5's table and claim were built whi
 
 ---
 
+## Finding 7: intermittent CSF exception 0x88 (GPU_SHAREABILITY_FAULT) on one SDL3 + zink title
+
+**Status: open.** On the replacement unit (healthy: the CPU memcpy loop and Mario run for 16+ minutes), Tyrian (Open Tyrian 2000, a 64-bit SDL3 Android port, GL through zink) sometimes loses the GPU within 15 to 240 s, and sometimes runs 20 minutes clean. Mario (SDL2 + GL via zink) and NFS Most Wanted (Vulkan direct) were unaffected in 20 minute runs on the same driver.
+
+**What the client sees.** `kbase: CSF group 0 fatal error: status 0x00c00488 (exception 0x88)`, then `CSF queue-group error (error_type 1) while waiting on subqueue N job M`, then `zink: DEVICE LOST!` (patch 012 latches the group error). 0x88 is GPU_SHAREABILITY_FAULT in the Mali CSF exception list (named from the Linux panthor enum; the vendor kbase headers were not available to us). If the game process keeps running after DEVICE LOST, free memory drops by more than 1 GB within 30 s and stays there; once the box hung until it was power-cycled (system_server watchdog, no kernel record). Killing the process when DEVICE LOST appears avoids that.
+
+**Runs (2026-11-09, one unit, Tyrian, 20 minutes each; "cold" = fresh boot, 15 minutes idle and under 50 C first; box display on and TV off in every run).**
+
+| Run | Driver | Tyrian result |
+|---|---|---|
+| T013 | 001-013 (0ac69e67) | game exited at 612 s, cause not captured |
+| T013b | 001-013 (0ac69e67) | 0x88 at about 150 s, then the hang above |
+| C013 | 001-013 (0ac69e67), cold | 0x88 at about 240 s |
+| Tpre | 001-012 (730608c3) | survived |
+| K12T | 001-012 (93079e2d, clean kit build), cold | 0x88 at about 15 s |
+| V10T | 001-012 (730608c3), cold | survived, 34,440 frames |
+| K12TV | 001-012 (93079e2d), cold | survived, 34,380 frames (the TV was switched on for the last 14 minutes) |
+| pending | 001-012 (93079e2d), cold, TV on from the start | not run yet |
+
+Same driver 93079e2d, other titles: Mario 20 min clean (36,120 frames), NFS 20 min clean. 001-013 on NFS: 20 min clean.
+
+**Reading.** 013 survived 0 of 3 Tyrian runs and 001-012 survived 3 of 4, so 013 is withdrawn as the safer default, not because it is shown to cause the fault. The fault reproduces without 013. Tyrian's reinstalled game data matched the earlier copy by name and size. Temperatures stayed under 56 C (live HAL reading).
+
+**Reproducibility note.** The 001-013 binary in the first prebuilt release (sha256 0ac69e67...) is not byte-reproducible from this kit's source: a clean rebuild of the same 001-013 source gives 3c4b8ff3..., so that binary came from an older build-directory state. The current release is a clean build of 001-012 (93079e2d...).
+
 ## The patch set as carried here (`patches/csf-v10/`)
 
 All apply in order after the stock `g610-v10-csf` series with `apply-patches.sh`'s strict no-offset/no-fuzz check. A clean base `5a07217f034` plus the series reproduces our working tree byte for byte.
@@ -179,7 +206,8 @@ All apply in order after the stock `g610-v10-csf` series with `apply-patches.sh`
 | 010 kbase-desc-ring-and-vkevent-syncs-in-csf-event-memory | csf-v11/085 adapted for v10: desc ring and VkEvent syncs in CSF event memory | needed but not sufficient for **Finding 5** |
 | 011 kbase-vertex-tiler-started-heap-ops-only | csf-v11/098 verbatim, headers regenerated for v10 | needed but not sufficient for **Finding 5** |
 | 012 kbase-wait-fail-fast-on-group-error | check the latched CSF group error in the completion wait | diagnostic |
-| 013 kbase-one-csg-per-queue | one CSG with 3 CSIs per VkQueue instead of one CSG per subqueue | **Finding 5** |
+
+013 kbase-one-csg-per-queue (one CSG with 3 CSIs per VkQueue) is withdrawn and kept in `patches/withdrawn/`; see Findings 5 and 7.
 
 005-008 are specific to running GLES-on-zink from a bundled arm64 bionic runtime; they are listed so the tree is reproducible, not as proposals.
 

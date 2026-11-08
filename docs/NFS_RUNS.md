@@ -138,9 +138,9 @@ On-screen touch controls: the port draws them only while SDL reports no gamepad,
 (`touch::Shown`). With the DS4 mapped they never appear on the TV, and no setting is needed. The in-game TOUCH CONTROLS menu
 has opacity, size, steering and stick mode for phones.
 
-Driver work that stands regardless: 013 (one CSG per queue) and the NFS launch fixes (apkrun SDL_Init/SDL_GetPointerProperty
+Driver work that stands regardless: the NFS launch fixes (apkrun SDL_Init/SDL_GetPointerProperty
 shims, SDL_VULKAN_LIBRARY, tile launch flags). Finding 5's before/after should be re-validated on a board without this
-lockup before it is presented upstream as proven.
+lockup before it is presented upstream as proven. (2026-11-09: 013 was later withdrawn; see Finding 7.)
 
 ## Capped runs (Haxxor Jr, 2026-11-08 10:02-11:14)
 
